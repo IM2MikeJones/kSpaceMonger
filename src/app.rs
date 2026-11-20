@@ -109,8 +109,8 @@ fn scheme(choice: i32, depth: i32) -> (Color32, Color32, Color32) {
 }
 
 const LABEL_SIZE: f32 = 10.0;
-/// Default egui GUI zoom (Ctrl+/- still adjusts; Ctrl+0 resets to 1.0).
-const UI_ZOOM: f32 = 0.85;
+/// Default egui GUI zoom — aim for normal desktop-app density (Ctrl+/- still adjusts).
+const UI_ZOOM: f32 = 0.70;
 /// Zoom animation: 8 outline steps, 25 ms apart (0x406110: loop to 8, Sleep(0x19)).
 const ANIM_STEPS: i32 = 8;
 const ANIM_STEP_SECS: f32 = 0.025;
@@ -199,13 +199,13 @@ impl SpaceApp {
         cc.egui_ctx.set_zoom_factor(UI_ZOOM);
         cc.egui_ctx.set_visuals(modern_visuals());
         cc.egui_ctx.all_styles_mut(|style| {
-            style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(12.0));
-            style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(12.0));
+            style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(11.0));
+            style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(11.0));
             style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(10.0));
-            style.spacing.item_spacing = Vec2::new(6.0, 4.0);
-            style.spacing.button_padding = Vec2::new(8.0, 3.0);
-            style.visuals.window_corner_radius = CornerRadius::same(6);
-            style.visuals.menu_corner_radius = CornerRadius::same(6);
+            style.spacing.item_spacing = Vec2::new(5.0, 3.0);
+            style.spacing.button_padding = Vec2::new(6.0, 2.0);
+            style.visuals.window_corner_radius = CornerRadius::same(4);
+            style.visuals.menu_corner_radius = CornerRadius::same(4);
         });
 
         let mut app = SpaceApp {
@@ -1220,30 +1220,30 @@ impl eframe::App for SpaceApp {
         }
 
         egui::Panel::top("menubar")
-            .exact_size(28.0)
+            .exact_size(22.0)
             .frame(
                 Frame::NONE
                     .fill(Color32::from_rgb(220, 220, 220))
-                    .inner_margin(Margin::symmetric(6, 2))
+                    .inner_margin(Margin::symmetric(4, 1))
                     .stroke(Stroke::new(1.0, Color32::from_rgb(190, 190, 190))),
             )
             .show(ui, |ui| self.menu_bar(ui));
         egui::Panel::bottom("status")
-            .exact_size(24.0)
+            .exact_size(20.0)
             .frame(
                 Frame::NONE
                     .fill(Color32::from_rgb(245, 245, 247))
-                    .inner_margin(Margin::symmetric(10, 4))
+                    .inner_margin(Margin::symmetric(8, 2))
                     .stroke(Stroke::new(1.0, Color32::from_rgb(210, 210, 216))),
             )
             .show(ui, |ui| self.status_bar(ui));
         egui::CentralPanel::default()
-            .frame(Frame::NONE.fill(Color32::from_rgb(250, 250, 252)).inner_margin(Margin::same(6)))
+            .frame(Frame::NONE.fill(Color32::from_rgb(250, 250, 252)).inner_margin(Margin::same(4)))
             .show(ui, |ui| {
                 let inner = ui.max_rect();
                 ui.painter().rect_stroke(
                     inner,
-                    4.0,
+                    3.0,
                     Stroke::new(1.0, Color32::from_rgb(200, 200, 208)),
                     StrokeKind::Inside,
                 );
