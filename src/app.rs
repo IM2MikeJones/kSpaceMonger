@@ -1016,7 +1016,7 @@ impl SpaceApp {
                     draw_icon(ui.painter(), Cmd::About, r, true);
                     ui.vertical(|ui| {
                         ui.label(
-                            egui::RichText::new("kSpaceMonger 0.1.0").font(FontId::new(16.0, FontFamily::Name("bold".into()))),
+                            egui::RichText::new("kSpaceMonger 0.2.0-dev").font(FontId::new(16.0, FontFamily::Name("bold".into()))),
                         );
                         ui.label("A fast disk space map for Linux,");
                         ui.label("in the style of the classic 1990s space mappers.");

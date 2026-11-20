@@ -2,7 +2,7 @@
 
 A fast disk/folder space map for Linux, in the classic SpaceMonger style: readable colors, clear labels, and quick drill-down through directory hierarchies.
 
-**Version:** 0.1.0
+**Version:** 0.2.0-dev (unreleased — develop on branch `v0.2`)
 
 ## Build
 
