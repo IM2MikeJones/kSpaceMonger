@@ -109,6 +109,8 @@ fn scheme(choice: i32, depth: i32) -> (Color32, Color32, Color32) {
 }
 
 const LABEL_SIZE: f32 = 10.0;
+/// Default egui GUI zoom (Ctrl+/- still adjusts; Ctrl+0 resets to 1.0).
+const UI_ZOOM: f32 = 0.85;
 /// Zoom animation: 8 outline steps, 25 ms apart (0x406110: loop to 8, Sleep(0x19)).
 const ANIM_STEPS: i32 = 8;
 const ANIM_STEP_SECS: f32 = 0.025;
@@ -194,13 +196,14 @@ impl SpaceApp {
         screenshot: Option<PathBuf>,
     ) -> Self {
         install_fonts(&cc.egui_ctx);
+        cc.egui_ctx.set_zoom_factor(UI_ZOOM);
         cc.egui_ctx.set_visuals(modern_visuals());
         cc.egui_ctx.all_styles_mut(|style| {
-            style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(13.0));
-            style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(13.0));
-            style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(11.0));
-            style.spacing.item_spacing = Vec2::new(8.0, 6.0);
-            style.spacing.button_padding = Vec2::new(10.0, 4.0);
+            style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(12.0));
+            style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(12.0));
+            style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(10.0));
+            style.spacing.item_spacing = Vec2::new(6.0, 4.0);
+            style.spacing.button_padding = Vec2::new(8.0, 3.0);
             style.visuals.window_corner_radius = CornerRadius::same(6);
             style.visuals.menu_corner_radius = CornerRadius::same(6);
         });
