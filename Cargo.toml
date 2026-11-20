@@ -1,6 +1,6 @@
 [package]
 name = "kspacemonger"
-version = "1.0.0"
+version = "0.1.0"
 edition = "2021"
 description = "kSpaceMonger — a fast disk space map for Linux in the classic style"
 
