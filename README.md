@@ -2,9 +2,9 @@
 
 A fast disk/folder space map for Linux, in the classic SpaceMonger style: readable colors, clear labels, and quick drill-down through directory hierarchies.
 
-**Version:** 0.2.0-dev (unreleased — develop on branch `v0.2`)
+**Version:** 0.2.0
 
-0.2 UI: modern chrome with a normal **File / View / Item / Settings / Help** menu bar (Win95 toolbar removed). The classic treemap color schemes remain.
+0.2 UI: modern chrome with a normal **File / View / Item / Settings / Help** menu bar (Win95 toolbar removed). The classic treemap color schemes remain. Default zoom **0.60**; density defaults to **Very Many Files** with free space shown.
 
 ## Build
 

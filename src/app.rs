@@ -108,9 +108,8 @@ fn scheme(choice: i32, depth: i32) -> (Color32, Color32, Color32) {
     }
 }
 
-const LABEL_SIZE: f32 = 10.0;
-/// Default egui GUI zoom — aim for normal desktop-app density (Ctrl+/- still adjusts).
-const UI_ZOOM: f32 = 0.70;
+const LABEL_SIZE: f32 = 9.0;
+const UI_ZOOM: f32 = 0.60;
 /// Zoom animation: 8 outline steps, 25 ms apart (0x406110: loop to 8, Sleep(0x19)).
 const ANIM_STEPS: i32 = 8;
 const ANIM_STEP_SECS: f32 = 0.025;
@@ -176,6 +175,10 @@ pub struct SpaceApp {
     anim: Option<Anim>,
     hover: Option<(usize, Instant)>,
     drive_dialog: bool,
+    /// Auto-open drive picker after the main window size has settled.
+    pending_drive: bool,
+    viewport_last: Option<Vec2>,
+    viewport_stable_frames: u8,
     drive_text: String,
     drive_pick: Option<usize>,
     mounts: Vec<Mount>,
@@ -184,6 +187,15 @@ pub struct SpaceApp {
     confirm_delete: Option<usize>,
     properties: Option<usize>,
     message: Option<String>,
+    /// Per-open id salt so egui does not reuse a prior dialog pos/size.
+    dlg_seq: u64,
+    drive_seq: u64,
+    settings_seq: u64,
+    about_seq: u64,
+    delete_seq: u64,
+    props_seq: u64,
+    message_seq: u64,
+    scan_seq: u64,
     shot: Option<Shot>,
     last_window: Option<[f32; 4]>,
 }
@@ -199,11 +211,13 @@ impl SpaceApp {
         cc.egui_ctx.set_zoom_factor(UI_ZOOM);
         cc.egui_ctx.set_visuals(modern_visuals());
         cc.egui_ctx.all_styles_mut(|style| {
-            style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(11.0));
-            style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(11.0));
-            style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(10.0));
-            style.spacing.item_spacing = Vec2::new(5.0, 3.0);
-            style.spacing.button_padding = Vec2::new(6.0, 2.0);
+            style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(10.0));
+            style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(10.0));
+            style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(9.0));
+            style.spacing.item_spacing = Vec2::new(4.0, 2.0);
+            style.spacing.button_padding = Vec2::new(5.0, 1.0);
+            style.spacing.icon_width = 12.0;
+            style.spacing.icon_width_inner = 10.0;
             style.visuals.window_corner_radius = CornerRadius::same(4);
             style.visuals.menu_corner_radius = CornerRadius::same(4);
         });
@@ -213,7 +227,7 @@ impl SpaceApp {
             tree: None,
             view_root: 0,
             selected: None,
-            show_free: false,
+            show_free: true,
             placed: Vec::new(),
             layout_key: None,
             tree_gen: 0,
@@ -221,6 +235,9 @@ impl SpaceApp {
             anim: None,
             hover: None,
             drive_dialog: false,
+            pending_drive: false,
+            viewport_last: None,
+            viewport_stable_frames: 0,
             drive_text: String::new(),
             drive_pick: None,
             mounts: Vec::new(),
@@ -229,6 +246,14 @@ impl SpaceApp {
             confirm_delete: None,
             properties: None,
             message: None,
+            dlg_seq: 0,
+            drive_seq: 0,
+            settings_seq: 0,
+            about_seq: 0,
+            delete_seq: 0,
+            props_seq: 0,
+            message_seq: 0,
+            scan_seq: 0,
             shot: screenshot.map(|path| Shot {
                 path,
                 frames: 0,
@@ -242,9 +267,38 @@ impl SpaceApp {
         let folder = folder.or_else(|| app.shot.as_ref().map(|_| PathBuf::from("/usr")));
         match folder {
             Some(f) => app.start_scan(f, None),
-            None => app.open_drive_dialog(),
+            None => app.pending_drive = true,
         }
         app
+    }
+
+    fn next_dlg_seq(&mut self) -> u64 {
+        self.dlg_seq = self.dlg_seq.wrapping_add(1);
+        self.dlg_seq
+    }
+
+    fn set_message(&mut self, msg: impl Into<String>) {
+        self.message_seq = self.next_dlg_seq();
+        self.message = Some(msg.into());
+    }
+
+    fn try_open_pending_drive(&mut self, ctx: &egui::Context) {
+        if !self.pending_drive {
+            return;
+        }
+        let size = ctx.content_rect().size();
+        if self.viewport_last.is_some_and(|prev| (prev - size).length() < 0.5) {
+            self.viewport_stable_frames = self.viewport_stable_frames.saturating_add(1);
+        } else {
+            self.viewport_stable_frames = 1;
+        }
+        self.viewport_last = Some(size);
+        if self.viewport_stable_frames >= 4 && size.x >= 480.0 && size.y >= 320.0 {
+            self.pending_drive = false;
+            self.open_drive_dialog();
+        } else {
+            ctx.request_repaint();
+        }
     }
 
     // ---------- scanning ----------
@@ -261,6 +315,7 @@ impl SpaceApp {
             .stack_size(256 * 1024 * 1024)
             .spawn(move || scan::scan(path2, p2))
             .ok();
+        self.scan_seq = self.next_dlg_seq();
         self.scan = Some(ScanJob { path, progress, handle, restore_view });
     }
 
@@ -270,7 +325,7 @@ impl SpaceApp {
             None => {
                 if self.scan.as_ref().is_some_and(|j| j.handle.is_none()) {
                     self.scan = None;
-                    self.message = Some("Could not start scanning.".into());
+                    self.set_message("Could not start scanning.");
                 }
                 return;
             }
@@ -291,13 +346,17 @@ impl SpaceApp {
                 self.tree = Some(tree);
                 self.view_root = view;
                 self.selected = None;
+                self.hover = None;
+                self.placed.clear();
                 self.anim = None;
+                self.confirm_delete = None;
+                self.properties = None;
                 self.tree_gen += 1;
                 self.layout_key = None;
             }
             None => {
                 if !job.progress.cancel.load(Ordering::Relaxed) {
-                    self.message = Some(format!("Could not read the folder {}", job.path.display()));
+                    self.set_message(format!("Could not read the folder {}", job.path.display()));
                 }
             }
         }
@@ -312,22 +371,24 @@ impl SpaceApp {
         let Some(t) = &self.tree else {
             return matches!(cmd, Cmd::Open | Cmd::Setup | Cmd::About);
         };
+        let selected = self.selected.filter(|&s| s < t.nodes.len());
+        let view = self.view_root.min(t.nodes.len().saturating_sub(1));
         match cmd {
             Cmd::Open | Cmd::Setup | Cmd::About | Cmd::Reload | Cmd::FreeSpace => true,
-            Cmd::ZoomFull => self.view_root != t.root(),
+            Cmd::ZoomFull => view != t.root(),
             Cmd::ZoomIn => self.zoom_in_target().is_some(),
-            Cmd::ZoomOut => t.nodes[self.view_root].parent.is_some(),
-            Cmd::Run => self.selected.is_some_and(|s| !t.nodes[s].is_free),
+            Cmd::ZoomOut => t.nodes[view].parent.is_some(),
+            Cmd::Run => selected.is_some_and(|s| !t.nodes[s].is_free),
             Cmd::Delete => {
                 !self.settings.disable_delete
-                    && self.selected.is_some_and(|s| !t.nodes[s].is_free && t.nodes[s].parent.is_some())
+                    && selected.is_some_and(|s| !t.nodes[s].is_free && t.nodes[s].parent.is_some())
             }
         }
     }
 
     fn zoom_in_target(&self) -> Option<usize> {
         let t = self.tree.as_ref()?;
-        let s = self.selected?;
+        let s = self.selected.filter(|&s| s < t.nodes.len())?;
         let n = &t.nodes[s];
         if n.is_free {
             return None;
@@ -363,13 +424,22 @@ impl SpaceApp {
                 if let (Some(t), Some(s)) = (&self.tree, self.selected) {
                     let p = t.path_of(s);
                     if let Err(e) = std::process::Command::new("xdg-open").arg(&p).spawn() {
-                        self.message = Some(format!("Could not open {}:\n{}", p.display(), e));
+                        self.set_message(format!("Could not open {}:\n{}", p.display(), e));
                     }
                 }
             }
-            Cmd::Delete => self.confirm_delete = self.selected,
-            Cmd::Setup => self.settings_dialog = Some(self.settings.clone()),
-            Cmd::About => self.about = true,
+            Cmd::Delete => {
+                self.delete_seq = self.next_dlg_seq();
+                self.confirm_delete = self.selected;
+            }
+            Cmd::Setup => {
+                self.settings_seq = self.next_dlg_seq();
+                self.settings_dialog = Some(self.settings.clone());
+            }
+            Cmd::About => {
+                self.about_seq = self.next_dlg_seq();
+                self.about = true;
+            }
         }
     }
 
@@ -440,7 +510,7 @@ impl SpaceApp {
                 self.tree_gen += 1;
                 self.layout_key = None;
             }
-            Err(e) => self.message = Some(format!("Could not delete {}:\n{}", path.display(), e)),
+            Err(e) => self.set_message(format!("Could not delete {}:\n{}", path.display(), e)),
         }
         if self.settings.auto_rescan {
             self.rescan();
@@ -458,6 +528,7 @@ impl SpaceApp {
                 .or_else(|| std::env::var("HOME").ok())
                 .unwrap_or_else(|| "/".into());
         }
+        self.drive_seq = self.next_dlg_seq();
         self.drive_dialog = true;
     }
 
@@ -525,18 +596,24 @@ impl SpaceApp {
                     ui.close();
                 }
             });
-            ui.menu_button(egui::RichText::new("Settings").color(Color32::BLACK), |ui| {
-                if ui.add_enabled(self.can(Cmd::Setup), egui::Button::new("Setup…")).clicked() {
-                    self.run(Cmd::Setup, &ctx);
-                    ui.close();
-                }
-            });
-            ui.menu_button(egui::RichText::new("Help").color(Color32::BLACK), |ui| {
-                if ui.add_enabled(self.can(Cmd::About), egui::Button::new("About kSpaceMonger")).clicked() {
-                    self.run(Cmd::About, &ctx);
-                    ui.close();
-                }
-            });
+            if ui
+                .add_enabled(
+                    self.can(Cmd::Setup),
+                    egui::Button::new(egui::RichText::new("Settings").color(Color32::BLACK)),
+                )
+                .clicked()
+            {
+                self.run(Cmd::Setup, &ctx);
+            }
+            if ui
+                .add_enabled(
+                    self.can(Cmd::About),
+                    egui::Button::new(egui::RichText::new("About kSpaceMonger").color(Color32::BLACK)),
+                )
+                .clicked()
+            {
+                self.run(Cmd::About, &ctx);
+            }
         });
     }
 
@@ -551,17 +628,15 @@ impl SpaceApp {
                     .hover
                     .and_then(|(pi, _)| self.placed.get(pi))
                     .and_then(|p| p.node)
-                    .or(self.selected);
+                    .or(self.selected)
+                    .filter(|&i| i < t.nodes.len());
+                let root = self.view_root.min(t.nodes.len().saturating_sub(1));
                 let left = match focus {
                     Some(i) if t.nodes[i].is_free => format!("Free space: {}", scan::fmt_size(t.fs_free)),
                     Some(i) => format!("{}  ·  {}", t.path_of(i).display(), scan::fmt_size(t.nodes[i].size)),
-                    None => format!(
-                        "{}  ·  {}",
-                        t.path_of(self.view_root).display(),
-                        scan::fmt_size(t.nodes[self.view_root].size)
-                    ),
+                    None => format!("{}  ·  {}", t.path_of(root).display(), scan::fmt_size(t.nodes[root].size)),
                 };
-                let v = &t.nodes[self.view_root];
+                let v = &t.nodes[root];
                 let right = format!(
                     "Files: {}   Folders: {}   Free: {} ({})",
                     scan::fmt_count(v.files),
@@ -606,9 +681,9 @@ impl SpaceApp {
 
         let key = (w, h, self.view_root, self.settings.density, self.settings.bias, self.show_free, self.tree_gen);
         if self.layout_key != Some(key) {
+            self.hover = None;
             self.placed = layout::layout(tree, self.view_root, w, h, &self.params());
             self.layout_key = Some(key);
-            self.hover = None;
         }
 
         painter.rect_filled(rect, 0.0, Color32::from_rgb(245, 245, 247));
@@ -651,7 +726,7 @@ impl SpaceApp {
             if !r.intersects(rect) {
                 continue;
             }
-            let node = pl.node.map(|i| &tree.nodes[i]);
+            let node = pl.node.and_then(|i| tree.nodes.get(i));
             let selected = pl.node.is_some() && pl.node == self.selected;
             draw_box(&painter, r, pl, node, tree, &self.settings, selected, rollover_pi == Some(pi), true);
         }
@@ -663,7 +738,10 @@ impl SpaceApp {
             painter.rect_stroke(o.expand(1.0), 0.0, Stroke::new(1.0, BLACK), StrokeKind::Inside);
         }
 
-        let hovered_node = hovered_pi.and_then(|pi| self.placed[pi].node);
+        let hovered_node = hovered_pi
+            .and_then(|pi| self.placed.get(pi))
+            .and_then(|p| p.node)
+            .filter(|&n| n < tree.nodes.len());
         let is_dir = hovered_node.map(|n| tree.nodes[n].is_dir && !tree.nodes[n].is_free);
         let is_free = hovered_node.is_some_and(|n| tree.nodes[n].is_free);
         if resp.clicked() || resp.secondary_clicked() {
@@ -714,6 +792,7 @@ impl SpaceApp {
             }
             ui.separator();
             if ui.add_enabled(self.selected.is_some(), egui::Button::new("Properties...")).clicked() {
+                self.props_seq = self.next_dlg_seq();
                 self.properties = self.selected;
                 ui.close();
             }
@@ -793,8 +872,8 @@ impl SpaceApp {
             let current = job.progress.current.lock().map(|s| s.clone()).unwrap_or_default();
             let path = job.path.display().to_string();
             let mut cancel = false;
-            dialog(ctx, "Scanning Disk...", |ui| {
-                ui.set_width(380.0);
+            dialog(ctx, "Scanning Disk...", self.scan_seq, |ui| {
+                ui.set_min_width(380.0);
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(Vec2::new(48.0, 40.0), Sense::hover());
                     scan_anim(ui.painter(), r, ui.input(|i| i.time));
@@ -826,43 +905,64 @@ impl SpaceApp {
         if self.drive_dialog && self.scan.is_none() {
             let mut ok = false;
             let mut cancel = false;
-            dialog(ctx, "Select Drive to View", |ui| {
-                ui.set_width(470.0);
+            dialog(ctx, "Select Drive to View", self.drive_seq, |ui| {
+                ui.set_min_width(470.0);
                 ui.label("Choose a drive, or type the folder to map:");
-                Frame::NONE.fill(Color32::WHITE).stroke(Stroke::new(1.0, SHADOW)).inner_margin(Margin::same(2)).show(ui, |ui| {
-                    egui::ScrollArea::vertical().max_height(190.0).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        for (i, m) in self.mounts.iter().enumerate() {
-                            let sel = self.drive_pick == Some(i);
-                            let text = if m.total > 0 {
-                                format!(
-                                    "{}   [{}]   {} free of {}",
-                                    m.label,
-                                    m.fstype,
-                                    scan::fmt_size(m.free),
-                                    scan::fmt_size(m.total)
-                                )
-                            } else {
-                                m.label.clone()
-                            };
-                            let r = ui.add(
-                                egui::Button::selectable(sel, text).min_size(Vec2::new(ui.available_width(), 20.0)),
-                            );
-                            if r.clicked() {
-                                self.drive_pick = Some(i);
-                                self.drive_text = m.path.display().to_string();
-                            }
-                            if r.double_clicked() {
-                                self.drive_text = m.path.display().to_string();
-                                ok = true;
-                            }
-                        }
+                // List height tracks the dialog; reserve FOOTER for path row + buttons.
+                const FOOTER: f32 = 56.0;
+                let list_key = egui::Id::unique(("drive_list_h", self.drive_seq));
+                let list_h = if ui.is_sizing_pass() {
+                    ui.ctx().data(|d| d.get_temp::<f32>(list_key)).unwrap_or(190.0)
+                } else {
+                    let h = (ui.available_height() - FOOTER).max(80.0);
+                    ui.ctx().data_mut(|d| d.insert_temp(list_key, h));
+                    h
+                };
+                Frame::NONE
+                    .fill(Color32::WHITE)
+                    .stroke(Stroke::new(1.0, SHADOW))
+                    .inner_margin(Margin::same(2))
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("drive_list")
+                            .max_height(list_h)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                for (i, m) in self.mounts.iter().enumerate() {
+                                    let sel = self.drive_pick == Some(i);
+                                    let text = if m.total > 0 {
+                                        format!(
+                                            "{}   [{}]   {} free of {}",
+                                            m.label,
+                                            m.fstype,
+                                            scan::fmt_size(m.free),
+                                            scan::fmt_size(m.total)
+                                        )
+                                    } else {
+                                        m.label.clone()
+                                    };
+                                    let r = ui.add(
+                                        egui::Button::selectable(sel, text)
+                                            .min_size(Vec2::new(ui.available_width(), 20.0)),
+                                    );
+                                    if r.clicked() {
+                                        self.drive_pick = Some(i);
+                                        self.drive_text = m.path.display().to_string();
+                                    }
+                                    if r.double_clicked() {
+                                        self.drive_text = m.path.display().to_string();
+                                        ok = true;
+                                    }
+                                }
+                            });
                     });
-                });
                 ui.horizontal(|ui| {
                     ui.label("Folder:");
-                    let r = ui.add(egui::TextEdit::singleline(&mut self.drive_text).desired_width(400.0));
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut self.drive_text).desired_width(ui.available_width() - 60.0),
+                    );
                     if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         ok = true;
                     }
@@ -884,7 +984,7 @@ impl SpaceApp {
                     self.drive_dialog = false;
                     self.start_scan(p, None);
                 } else {
-                    self.message = Some(format!("{} is not a folder.", p.display()));
+                    self.set_message(format!("{} is not a folder.", p.display()));
                 }
             } else if cancel || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.drive_dialog = false;
@@ -894,8 +994,8 @@ impl SpaceApp {
         if let Some(mut s) = self.settings_dialog.take() {
             let mut keep = true;
             let mut apply = false;
-            dialog(ctx, "Settings", |ui| {
-                ui.set_width(440.0);
+            dialog(ctx, "Settings", self.settings_seq, |ui| {
+                ui.set_min_width(440.0);
                 group(ui, "File Layout", |ui| {
                     egui::Grid::new("layout_grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                         ui.label("Density:");
@@ -1016,14 +1116,14 @@ impl SpaceApp {
 
         if self.about {
             let mut close = false;
-            dialog(ctx, "About kSpaceMonger", |ui| {
-                ui.set_width(360.0);
+            dialog(ctx, "About kSpaceMonger", self.about_seq, |ui| {
+                ui.set_min_width(360.0);
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
                     draw_icon(ui.painter(), Cmd::About, r, true);
                     ui.vertical(|ui| {
                         ui.label(
-                            egui::RichText::new("kSpaceMonger 0.2.0-dev").font(FontId::new(16.0, FontFamily::Name("bold".into()))),
+                            egui::RichText::new("kSpaceMonger 0.2.0").font(FontId::new(16.0, FontFamily::Name("bold".into()))),
                         );
                         ui.label("A fast disk space map for Linux,");
                         ui.label("in the style of the classic 1990s space mappers.");
@@ -1050,8 +1150,8 @@ impl SpaceApp {
                 None => (PathBuf::new(), 0, false),
             };
             let mut answer = None;
-            dialog(ctx, "Delete", |ui| {
-                ui.set_width(400.0);
+            dialog(ctx, "Delete", self.delete_seq, |ui| {
+                ui.set_min_width(400.0);
                 ui.label(if is_dir {
                     "Delete this folder and everything in it?"
                 } else {
@@ -1105,8 +1205,8 @@ impl SpaceApp {
                 }
                 v
             };
-            dialog(ctx, "Properties", |ui| {
-                ui.set_width(420.0);
+            dialog(ctx, "Properties", self.props_seq, |ui| {
+                ui.set_min_width(420.0);
                 egui::Grid::new("props").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
                     for (k, val) in rows {
                         ui.label(k);
@@ -1127,8 +1227,8 @@ impl SpaceApp {
 
         if let Some(m) = self.message.clone() {
             let mut close = false;
-            dialog(ctx, "kSpaceMonger", |ui| {
-                ui.set_width(360.0);
+            dialog(ctx, "kSpaceMonger", self.message_seq, |ui| {
+                ui.set_min_width(360.0);
                 ui.label(m);
                 ui.vertical_centered(|ui| {
                     if ui.add(egui::Button::new("OK").min_size(Vec2::new(80.0, 22.0))).clicked() {
@@ -1220,20 +1320,20 @@ impl eframe::App for SpaceApp {
         }
 
         egui::Panel::top("menubar")
-            .exact_size(22.0)
+            .exact_size(20.0)
             .frame(
                 Frame::NONE
                     .fill(Color32::from_rgb(220, 220, 220))
-                    .inner_margin(Margin::symmetric(4, 1))
+                    .inner_margin(Margin::symmetric(4, 0))
                     .stroke(Stroke::new(1.0, Color32::from_rgb(190, 190, 190))),
             )
             .show(ui, |ui| self.menu_bar(ui));
         egui::Panel::bottom("status")
-            .exact_size(20.0)
+            .exact_size(18.0)
             .frame(
                 Frame::NONE
                     .fill(Color32::from_rgb(245, 245, 247))
-                    .inner_margin(Margin::symmetric(8, 2))
+                    .inner_margin(Margin::symmetric(6, 1))
                     .stroke(Stroke::new(1.0, Color32::from_rgb(210, 210, 216))),
             )
             .show(ui, |ui| self.status_bar(ui));
@@ -1250,6 +1350,7 @@ impl eframe::App for SpaceApp {
                 ui.scope_builder(egui::UiBuilder::new().max_rect(inner.shrink(1.0)), |ui| self.map(ui));
             });
 
+        self.try_open_pending_drive(&ctx);
         self.dialogs(&ctx);
         self.screenshot_step(&ctx);
     }
@@ -1451,26 +1552,100 @@ fn tip_lines(t: &Tree, i: usize, s: &Settings, info: bool) -> Vec<String> {
     v
 }
 
-fn dialog(ctx: &egui::Context, title: &str, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Window::new(title)
-        .id(egui::Id::unique(("dlg", title)))
+#[derive(Clone, Copy)]
+enum DlgPlace {
+    Center,
+    Free,
+}
+
+fn dialog(
+    ctx: &egui::Context,
+    title: &str,
+    seq: u64,
+    add: impl FnOnce(&mut egui::Ui),
+) -> Option<Rect> {
+    // Center on first open, then free. Title-strip drag only — with title_bar(false),
+    // egui's default WindowDrag::Anywhere steals OK / list clicks.
+    const SIZE: [f32; 2] = [360.0, 220.0];
+    const TITLE_H: f32 = 20.0;
+    let id = egui::Id::unique(("dlg", title, seq));
+    let place_key = id.with("place");
+    let pos_key = id.with("pos");
+    let place = ctx.data(|d| d.get_temp::<DlgPlace>(place_key).unwrap_or(DlgPlace::Center));
+    let pos = ctx.data(|d| d.get_temp::<Pos2>(pos_key));
+    let size = Vec2::from(SIZE);
+    let title = title.to_string();
+
+    let mut win = egui::Window::new(title.clone())
+        .id(id)
+        .title_bar(false)
         .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+        .resizable(true)
+        .movable(true)
+        .drag_area(egui::WindowDrag::Off)
+        .default_size(size)
+        .min_size(size)
         .frame(
             Frame::NONE
                 .fill(Color32::from_rgb(252, 252, 254))
                 .corner_radius(CornerRadius::same(8))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(190, 190, 200)))
-                .inner_margin(Margin::same(14))
+                .inner_margin(Margin::ZERO)
                 .shadow(egui::epaint::Shadow {
                     offset: [0, 4],
                     blur: 16,
                     spread: 0,
                     color: Color32::from_black_alpha(40),
                 }),
-        )
-        .show(ctx, add);
+        );
+    if matches!(place, DlgPlace::Center) {
+        win = win.anchor(Align2::CENTER_CENTER, Vec2::ZERO);
+    } else if let Some(p) = pos {
+        win = win.current_pos(p);
+    }
+
+    let mut title_drag = Vec2::ZERO;
+    let inner = win.show(ctx, |ui| {
+        let w = ui.available_width();
+        let (bar, bar_r) = ui.allocate_exact_size(Vec2::new(w, TITLE_H), Sense::drag());
+        if bar_r.dragged() {
+            title_drag = bar_r.drag_delta();
+        }
+        ui.painter().rect_filled(
+            bar,
+            CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 },
+            Color32::from_rgb(220, 220, 220),
+        );
+        ui.painter().line_segment(
+            [bar.left_bottom(), bar.right_bottom()],
+            Stroke::new(1.0, Color32::from_rgb(190, 190, 190)),
+        );
+        ui.painter().text(
+            bar.center(),
+            Align2::CENTER_CENTER,
+            &title,
+            FontId::proportional(10.0),
+            Color32::BLACK,
+        );
+        Frame::NONE
+            .inner_margin(Margin::same(14))
+            .show(ui, |ui| add(ui));
+    })?;
+    let r = inner.response.rect;
+    if matches!(place, DlgPlace::Center) && r.width() > 32.0 && r.height() > 32.0 {
+        ctx.data_mut(|d| {
+            d.insert_temp(place_key, DlgPlace::Free);
+            d.insert_temp(pos_key, r.min);
+        });
+        ctx.request_repaint();
+    } else if title_drag != Vec2::ZERO {
+        let p = pos.unwrap_or(r.min) + title_drag;
+        ctx.data_mut(|d| d.insert_temp(pos_key, p));
+        ctx.request_repaint();
+    } else if matches!(place, DlgPlace::Free) && pos.is_none() {
+        ctx.data_mut(|d| d.insert_temp(pos_key, r.min));
+    }
+    Some(r)
 }
 
 fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
