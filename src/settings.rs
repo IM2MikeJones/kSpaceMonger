@@ -48,7 +48,7 @@ pub const COLOR_LABELS: [&str; 12] = [
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            density: 0,
+            density: 1, // Very Many Files
             bias: 0,
             folder_color: 0,
             file_color: 0,
