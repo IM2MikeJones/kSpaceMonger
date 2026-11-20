@@ -463,14 +463,14 @@ impl SpaceApp {
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // Plain black labels on the light-gray bar (menu_style leaves fills transparent).
-        ui.visuals_mut().override_text_color = Some(Color32::BLACK);
-        for w in [
-            &mut ui.visuals_mut().widgets.inactive,
-            &mut ui.visuals_mut().widgets.hovered,
-            &mut ui.visuals_mut().widgets.active,
-            &mut ui.visuals_mut().widgets.open,
-        ] {
-            w.fg_stroke = Stroke::new(1.0, Color32::BLACK);
+        {
+            let v = ui.visuals_mut();
+            v.override_text_color.replace(Color32::BLACK);
+            let black = Stroke::new(1.0, Color32::BLACK);
+            v.widgets.inactive.fg_stroke = black;
+            v.widgets.hovered.fg_stroke = black;
+            v.widgets.active.fg_stroke = black;
+            v.widgets.open.fg_stroke = black;
         }
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(egui::RichText::new("File").color(Color32::BLACK), |ui| {
