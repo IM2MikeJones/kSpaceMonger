@@ -462,8 +462,18 @@ impl SpaceApp {
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Plain black labels on the light-gray bar (menu_style leaves fills transparent).
+        ui.visuals_mut().override_text_color = Some(Color32::BLACK);
+        for w in [
+            &mut ui.visuals_mut().widgets.inactive,
+            &mut ui.visuals_mut().widgets.hovered,
+            &mut ui.visuals_mut().widgets.active,
+            &mut ui.visuals_mut().widgets.open,
+        ] {
+            w.fg_stroke = Stroke::new(1.0, Color32::BLACK);
+        }
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
+            ui.menu_button(egui::RichText::new("File").color(Color32::BLACK), |ui| {
                 if ui.add_enabled(self.can(Cmd::Open), egui::Button::new("Open folder…")).clicked() {
                     self.run(Cmd::Open, &ctx);
                     ui.close();
@@ -478,7 +488,7 @@ impl SpaceApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
-            ui.menu_button("View", |ui| {
+            ui.menu_button(egui::RichText::new("View").color(Color32::BLACK), |ui| {
                 if ui.add_enabled(self.can(Cmd::ZoomIn), egui::Button::new("Zoom In")).clicked() {
                     self.run(Cmd::ZoomIn, &ctx);
                     ui.close();
@@ -502,7 +512,7 @@ impl SpaceApp {
                     ui.close();
                 }
             });
-            ui.menu_button("Item", |ui| {
+            ui.menu_button(egui::RichText::new("Item").color(Color32::BLACK), |ui| {
                 if ui.add_enabled(self.can(Cmd::Run), egui::Button::new("Run / Open")).clicked() {
                     self.run(Cmd::Run, &ctx);
                     ui.close();
@@ -512,13 +522,13 @@ impl SpaceApp {
                     ui.close();
                 }
             });
-            ui.menu_button("Settings", |ui| {
+            ui.menu_button(egui::RichText::new("Settings").color(Color32::BLACK), |ui| {
                 if ui.add_enabled(self.can(Cmd::Setup), egui::Button::new("Setup…")).clicked() {
                     self.run(Cmd::Setup, &ctx);
                     ui.close();
                 }
             });
-            ui.menu_button("Help", |ui| {
+            ui.menu_button(egui::RichText::new("Help").color(Color32::BLACK), |ui| {
                 if ui.add_enabled(self.can(Cmd::About), egui::Button::new("About kSpaceMonger")).clicked() {
                     self.run(Cmd::About, &ctx);
                     ui.close();
@@ -1208,7 +1218,12 @@ impl eframe::App for SpaceApp {
 
         egui::Panel::top("menubar")
             .exact_size(28.0)
-            .frame(Frame::NONE.inner_margin(Margin::symmetric(6, 2)))
+            .frame(
+                Frame::NONE
+                    .fill(Color32::from_rgb(220, 220, 220))
+                    .inner_margin(Margin::symmetric(6, 2))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(190, 190, 190))),
+            )
             .show(ui, |ui| self.menu_bar(ui));
         egui::Panel::bottom("status")
             .exact_size(24.0)
