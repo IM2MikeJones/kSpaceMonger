@@ -4,6 +4,8 @@ A fast disk/folder space map for Linux, in the classic SpaceMonger style: readab
 
 **Version:** 0.2.0-dev (unreleased — develop on branch `v0.2`)
 
+0.2 UI: modern chrome with a normal **File / View / Item / Settings / Help** menu bar (Win95 toolbar removed). The classic treemap color schemes remain.
+
 ## Build
 
 ```bash

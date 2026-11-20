@@ -1,4 +1,4 @@
-//! The main window: toolbar, space map, status bar and dialogs.
+//! The main window: menu bar, space map, status bar and dialogs.
 
 use crate::layout::{self, IRect, Placed};
 use crate::scan::{self, Progress, Tree};
@@ -127,19 +127,6 @@ enum Cmd {
     About,
 }
 
-const TOOLBAR: [(Cmd, &str, &str); 10] = [
-    (Cmd::Open, "Open", ""),
-    (Cmd::Reload, "Reload", ""),
-    (Cmd::ZoomFull, "Zoom", "Full"),
-    (Cmd::ZoomIn, "Zoom", "In"),
-    (Cmd::ZoomOut, "Zoom", "Out"),
-    (Cmd::FreeSpace, "Free", "Space"),
-    (Cmd::Run, "Run or", "Open"),
-    (Cmd::Delete, "Delete", ""),
-    (Cmd::Setup, "Setup", ""),
-    (Cmd::About, "About", ""),
-];
-
 struct ScanJob {
     path: PathBuf,
     progress: Arc<Progress>,
@@ -207,13 +194,15 @@ impl SpaceApp {
         screenshot: Option<PathBuf>,
     ) -> Self {
         install_fonts(&cc.egui_ctx);
-        cc.egui_ctx.set_visuals(classic_visuals());
+        cc.egui_ctx.set_visuals(modern_visuals());
         cc.egui_ctx.all_styles_mut(|style| {
-            style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(12.0));
-            style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(12.0));
-            style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(10.0));
-            style.spacing.item_spacing = Vec2::new(6.0, 5.0);
-            style.spacing.button_padding = Vec2::new(8.0, 3.0);
+            style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(13.0));
+            style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(13.0));
+            style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(11.0));
+            style.spacing.item_spacing = Vec2::new(8.0, 6.0);
+            style.spacing.button_padding = Vec2::new(10.0, 4.0);
+            style.visuals.window_corner_radius = CornerRadius::same(6);
+            style.visuals.menu_corner_radius = CornerRadius::same(6);
         });
 
         let mut app = SpaceApp {
@@ -471,58 +460,77 @@ impl SpaceApp {
 
     // ---------- drawing ----------
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
+    fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 1.0;
-            ui.add_space(2.0);
-            for (i, (cmd, l1, l2)) in TOOLBAR.iter().enumerate() {
-                if i == 2 || i == 5 || i == 8 {
-                    let (r, _) = ui.allocate_exact_size(Vec2::new(6.0, 36.0), Sense::hover());
-                    let x = r.center().x.round() - 0.5;
-                    ui.painter().line_segment([Pos2::new(x, r.top() + 3.0), Pos2::new(x, r.bottom() - 3.0)], (1.0, SHADOW));
-                    ui.painter()
-                        .line_segment([Pos2::new(x + 1.0, r.top() + 3.0), Pos2::new(x + 1.0, r.bottom() - 3.0)], (1.0, HILITE));
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                if ui.add_enabled(self.can(Cmd::Open), egui::Button::new("Open folder…")).clicked() {
+                    self.run(Cmd::Open, &ctx);
+                    ui.close();
                 }
-                let enabled = self.can(*cmd);
-                let toggled = *cmd == Cmd::FreeSpace && self.show_free;
-                let (rect, resp) =
-                    ui.allocate_exact_size(Vec2::new(66.0, 36.0), if enabled { Sense::click() } else { Sense::hover() });
-                let p = ui.painter();
-                let pressed = (enabled && resp.is_pointer_button_down_on()) || toggled;
-                if pressed || (enabled && resp.hovered()) {
-                    bevel(p, rect, !pressed);
+                if ui.add_enabled(self.can(Cmd::Reload), egui::Button::new("Reload")).clicked() {
+                    self.run(Cmd::Reload, &ctx);
+                    ui.close();
                 }
-                let off = if pressed { Vec2::new(1.0, 1.0) } else { Vec2::ZERO };
-                let icon = Rect::from_center_size(Pos2::new(rect.left() + 13.0, rect.center().y) + off, Vec2::splat(18.0));
-                draw_icon(p, *cmd, icon, enabled);
-                let color = if enabled { BLACK } else { SHADOW };
-                let font = FontId::new(11.0, FontFamily::Name("bold".into()));
-                let tx = rect.left() + 25.0 + off.x;
-                let lines: Vec<(&str, f32)> =
-                    if l2.is_empty() { vec![(*l1, 0.0)] } else { vec![(*l1, -6.5), (*l2, 6.5)] };
-                for (l, dy) in lines {
-                    let pos = Pos2::new(tx, rect.center().y + off.y + dy);
-                    if !enabled {
-                        p.text(pos + Vec2::new(1.0, 1.0), Align2::LEFT_CENTER, l, font.clone(), HILITE);
-                    }
-                    p.text(pos, Align2::LEFT_CENTER, l, font.clone(), color);
+                ui.separator();
+                if ui.button("Quit").clicked() {
+                    ui.close();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                if resp.clicked() {
-                    self.run(*cmd, &ctx);
+            });
+            ui.menu_button("View", |ui| {
+                if ui.add_enabled(self.can(Cmd::ZoomIn), egui::Button::new("Zoom In")).clicked() {
+                    self.run(Cmd::ZoomIn, &ctx);
+                    ui.close();
                 }
-            }
+                if ui.add_enabled(self.can(Cmd::ZoomOut), egui::Button::new("Zoom Out")).clicked() {
+                    self.run(Cmd::ZoomOut, &ctx);
+                    ui.close();
+                }
+                if ui.add_enabled(self.can(Cmd::ZoomFull), egui::Button::new("Zoom Full")).clicked() {
+                    self.run(Cmd::ZoomFull, &ctx);
+                    ui.close();
+                }
+                ui.separator();
+                let mut show_free = self.show_free;
+                if ui
+                    .add_enabled(self.can(Cmd::FreeSpace), egui::Checkbox::new(&mut show_free, "Show free space"))
+                    .changed()
+                {
+                    self.show_free = show_free;
+                    self.layout_key = None;
+                    ui.close();
+                }
+            });
+            ui.menu_button("Item", |ui| {
+                if ui.add_enabled(self.can(Cmd::Run), egui::Button::new("Run / Open")).clicked() {
+                    self.run(Cmd::Run, &ctx);
+                    ui.close();
+                }
+                if ui.add_enabled(self.can(Cmd::Delete), egui::Button::new("Delete…")).clicked() {
+                    self.run(Cmd::Delete, &ctx);
+                    ui.close();
+                }
+            });
+            ui.menu_button("Settings", |ui| {
+                if ui.add_enabled(self.can(Cmd::Setup), egui::Button::new("Setup…")).clicked() {
+                    self.run(Cmd::Setup, &ctx);
+                    ui.close();
+                }
+            });
+            ui.menu_button("Help", |ui| {
+                if ui.add_enabled(self.can(Cmd::About), egui::Button::new("About kSpaceMonger")).clicked() {
+                    self.run(Cmd::About, &ctx);
+                    ui.close();
+                }
+            });
         });
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
-        let rect = ui.max_rect();
-        let p = ui.painter();
-        let h = rect.height() - 4.0;
-        let font = FontId::proportional(12.0);
         let (left, right) = match &self.tree {
             None => {
-                let s = if self.scan.is_some() { "Scanning Disk..." } else { "Ready" };
+                let s = if self.scan.is_some() { "Scanning…" } else { "Ready" };
                 (s.to_string(), String::new())
             }
             Some(t) => {
@@ -532,17 +540,17 @@ impl SpaceApp {
                     .and_then(|p| p.node)
                     .or(self.selected);
                 let left = match focus {
-                    Some(i) if t.nodes[i].is_free => format!("Free Space: {}", scan::fmt_size(t.fs_free)),
-                    Some(i) => format!("{}    {}", t.path_of(i).display(), scan::fmt_size(t.nodes[i].size)),
+                    Some(i) if t.nodes[i].is_free => format!("Free space: {}", scan::fmt_size(t.fs_free)),
+                    Some(i) => format!("{}  ·  {}", t.path_of(i).display(), scan::fmt_size(t.nodes[i].size)),
                     None => format!(
-                        "{}    {}",
+                        "{}  ·  {}",
                         t.path_of(self.view_root).display(),
                         scan::fmt_size(t.nodes[self.view_root].size)
                     ),
                 };
                 let v = &t.nodes[self.view_root];
                 let right = format!(
-                    "Files Total: {}   Folders Total: {}   Free: {} ({})",
+                    "Files: {}   Folders: {}   Free: {} ({})",
                     scan::fmt_count(v.files),
                     scan::fmt_count(v.dirs),
                     scan::fmt_size(t.fs_free),
@@ -551,28 +559,14 @@ impl SpaceApp {
                 (left, right)
             }
         };
-        let rg = p.layout_no_wrap(right.clone(), font.clone(), BLACK);
-        let rw = if right.is_empty() { 0.0 } else { rg.size().x + 12.0 };
-        let r_right = Rect::from_min_size(Pos2::new(rect.right() - rw - 2.0, rect.top() + 2.0), Vec2::new(rw, h));
-        let r_left = Rect::from_min_max(
-            Pos2::new(rect.left() + 2.0, rect.top() + 2.0),
-            Pos2::new(r_right.left() - 3.0, rect.top() + 2.0 + h),
-        );
-        for r in [r_left, r_right] {
-            if r.width() > 4.0 {
-                bevel(p, r, false);
-            }
-        }
-        p.with_clip_rect(r_left.shrink(2.0)).text(
-            Pos2::new(r_left.left() + 5.0, r_left.center().y),
-            Align2::LEFT_CENTER,
-            left,
-            font,
-            BLACK,
-        );
-        if !right.is_empty() {
-            p.galley(Pos2::new(r_right.left() + 6.0, r_right.center().y - rg.size().y / 2.0), rg, BLACK);
-        }
+        ui.horizontal(|ui| {
+            ui.add(egui::Label::new(egui::RichText::new(left).small()).truncate());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !right.is_empty() {
+                    ui.label(egui::RichText::new(right).small().weak());
+                }
+            });
+        });
     }
 
     fn map(&mut self, ui: &mut egui::Ui) {
@@ -584,14 +578,14 @@ impl SpaceApp {
         let (w, h) = (rect.width().floor() as i32, rect.height().floor() as i32);
 
         let Some(tree) = &self.tree else {
-            painter.rect_filled(rect, 0.0, SHADOW);
+            painter.rect_filled(rect, 4.0, Color32::from_rgb(236, 236, 240));
             if self.scan.is_none() {
                 painter.text(
                     rect.center(),
                     Align2::CENTER_CENTER,
-                    "Click Open to choose a drive or folder",
+                    "File → Open folder… to choose a drive or folder",
                     FontId::proportional(14.0),
-                    Color32::WHITE,
+                    Color32::from_rgb(90, 90, 100),
                 );
             }
             return;
@@ -604,7 +598,7 @@ impl SpaceApp {
             self.hover = None;
         }
 
-        painter.rect_filled(rect, 0.0, FACE);
+        painter.rect_filled(rect, 0.0, Color32::from_rgb(245, 245, 247));
 
         let mut anim_t = None;
         if let Some(a) = &self.anim {
@@ -1212,19 +1206,31 @@ impl eframe::App for SpaceApp {
             self.last_window = Some([o.min.x, o.min.y, i.width(), i.height()]);
         }
 
-        egui::Panel::top("toolbar")
-            .exact_size(42.0)
-            .frame(Frame::NONE.fill(FACE).inner_margin(Margin::symmetric(0, 3)))
-            .show(ui, |ui| self.toolbar(ui));
+        egui::Panel::top("menubar")
+            .exact_size(28.0)
+            .frame(Frame::NONE.inner_margin(Margin::symmetric(6, 2)))
+            .show(ui, |ui| self.menu_bar(ui));
         egui::Panel::bottom("status")
-            .exact_size(22.0)
-            .frame(Frame::NONE.fill(FACE))
+            .exact_size(24.0)
+            .frame(
+                Frame::NONE
+                    .fill(Color32::from_rgb(245, 245, 247))
+                    .inner_margin(Margin::symmetric(10, 4))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(210, 210, 216))),
+            )
             .show(ui, |ui| self.status_bar(ui));
-        egui::CentralPanel::default().frame(Frame::NONE.fill(FACE).inner_margin(Margin::same(2))).show(ui, |ui| {
-            let inner = ui.max_rect();
-            bevel(ui.painter(), inner.expand(2.0), false);
-            ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| self.map(ui));
-        });
+        egui::CentralPanel::default()
+            .frame(Frame::NONE.fill(Color32::from_rgb(250, 250, 252)).inner_margin(Margin::same(6)))
+            .show(ui, |ui| {
+                let inner = ui.max_rect();
+                ui.painter().rect_stroke(
+                    inner,
+                    4.0,
+                    Stroke::new(1.0, Color32::from_rgb(200, 200, 208)),
+                    StrokeKind::Inside,
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(inner.shrink(1.0)), |ui| self.map(ui));
+            });
 
         self.dialogs(&ctx);
         self.screenshot_step(&ctx);
@@ -1242,26 +1248,20 @@ impl eframe::App for SpaceApp {
 
 // ---------- helpers ----------
 
-fn classic_visuals() -> egui::Visuals {
+fn modern_visuals() -> egui::Visuals {
     let mut v = egui::Visuals::light();
-    v.panel_fill = FACE;
-    v.window_fill = FACE;
-    v.faint_bg_color = Color32::from_rgb(212, 212, 212);
+    v.panel_fill = Color32::from_rgb(250, 250, 252);
+    v.window_fill = Color32::from_rgb(252, 252, 254);
+    v.faint_bg_color = Color32::from_rgb(240, 240, 244);
     v.extreme_bg_color = Color32::WHITE;
-    v.window_corner_radius = CornerRadius::ZERO;
-    v.menu_corner_radius = CornerRadius::ZERO;
-    v.window_stroke = Stroke::new(1.0, DKSHADOW);
-    v.override_text_color = Some(BLACK);
-    for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
-        w.corner_radius = CornerRadius::ZERO;
-    }
-    v.widgets.noninteractive.corner_radius = CornerRadius::ZERO;
-    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(208, 208, 208);
-    v.widgets.inactive.bg_fill = Color32::from_rgb(208, 208, 208);
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, SHADOW);
-    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(224, 224, 224);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, DKSHADOW);
-    v.selection.bg_fill = Color32::from_rgb(0, 0, 128);
+    v.window_corner_radius = CornerRadius::same(8);
+    v.menu_corner_radius = CornerRadius::same(6);
+    v.window_stroke = Stroke::new(1.0, Color32::from_rgb(190, 190, 200));
+    v.widgets.inactive.corner_radius = CornerRadius::same(4);
+    v.widgets.hovered.corner_radius = CornerRadius::same(4);
+    v.widgets.active.corner_radius = CornerRadius::same(4);
+    v.widgets.open.corner_radius = CornerRadius::same(4);
+    v.selection.bg_fill = Color32::from_rgb(61, 126, 218);
     v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
     v
 }
@@ -1290,15 +1290,6 @@ fn colors_for(pl: &Placed, n: &scan::Node, s: &Settings) -> (Color32, Color32, C
     }
     let choice = if pl.is_folder { s.folder_color } else { s.file_color };
     scheme(choice, pl.depth)
-}
-
-/// Raised (true) or sunken (false) Windows-style 1px bevel.
-fn bevel(p: &egui::Painter, r: Rect, raised: bool) {
-    let (tl, br) = if raised { (HILITE, SHADOW) } else { (SHADOW, HILITE) };
-    p.rect_filled(Rect::from_min_size(r.min, Vec2::new(r.width(), 1.0)), 0.0, tl);
-    p.rect_filled(Rect::from_min_size(r.min, Vec2::new(1.0, r.height())), 0.0, tl);
-    p.rect_filled(Rect::from_min_size(Pos2::new(r.min.x, r.max.y - 1.0), Vec2::new(r.width(), 1.0)), 0.0, br);
-    p.rect_filled(Rect::from_min_size(Pos2::new(r.max.x - 1.0, r.min.y), Vec2::new(1.0, r.height())), 0.0, br);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1443,36 +1434,39 @@ fn tip_lines(t: &Tree, i: usize, s: &Settings, info: bool) -> Vec<String> {
 }
 
 fn dialog(ctx: &egui::Context, title: &str, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Window::new(egui::RichText::new(title).font(FontId::new(12.0, FontFamily::Name("bold".into()))))
+    egui::Window::new(title)
         .id(egui::Id::unique(("dlg", title)))
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
         .frame(
             Frame::NONE
-                .fill(FACE)
-                .stroke(Stroke::new(1.0, DKSHADOW))
-                .inner_margin(Margin::same(10))
-                .shadow(egui::epaint::Shadow { offset: [2, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(90) }),
+                .fill(Color32::from_rgb(252, 252, 254))
+                .corner_radius(CornerRadius::same(8))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(190, 190, 200)))
+                .inner_margin(Margin::same(14))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 4],
+                    blur: 16,
+                    spread: 0,
+                    color: Color32::from_black_alpha(40),
+                }),
         )
         .show(ctx, add);
 }
 
 fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(4.0);
-    let resp = Frame::NONE.inner_margin(Margin { left: 8, right: 8, top: 14, bottom: 8 }).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        add(ui);
-    });
-    let r = resp.response.rect;
-    let p = ui.painter();
-    let er = Rect::from_min_max(Pos2::new(r.left() + 0.5, r.top() + 6.5), Pos2::new(r.right() - 1.5, r.bottom() - 1.5));
-    p.rect_stroke(er, 0.0, Stroke::new(1.0, SHADOW), StrokeKind::Middle);
-    p.rect_stroke(er.translate(Vec2::new(1.0, 1.0)), 0.0, Stroke::new(1.0, HILITE), StrokeKind::Middle);
-    let g = p.layout_no_wrap(title.to_string(), FontId::proportional(12.0), BLACK);
-    let tr = Rect::from_min_size(Pos2::new(r.left() + 8.0, r.top()), g.size() + Vec2::new(6.0, 0.0));
-    p.rect_filled(tr, 0.0, FACE);
-    p.galley(Pos2::new(tr.left() + 3.0, tr.top()), g, BLACK);
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(title).strong().small());
+    Frame::NONE
+        .fill(Color32::from_rgb(245, 245, 248))
+        .corner_radius(CornerRadius::same(6))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(210, 210, 218)))
+        .inner_margin(Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
 }
 
 fn scan_anim(p: &egui::Painter, r: Rect, time: f64) {
