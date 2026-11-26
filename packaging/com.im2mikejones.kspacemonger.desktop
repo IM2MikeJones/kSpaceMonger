@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=kSpaceMonger
+Comment=Disk and folder space map
+Exec=kSpaceMonger %F
+Icon=kspacemonger
+Terminal=false
+Categories=Utility;Filesystem;
+StartupNotify=true
+StartupWMClass=kspacemonger

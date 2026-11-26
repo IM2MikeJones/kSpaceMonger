@@ -54,13 +54,36 @@ struct Ctx<'a> {
     out: Vec<Placed>,
 }
 
-/// Lay out the view root's contents in a w×h area. Parents come before their children.
+/// Lay out the view: view-root folder fills the map; children are inset inside.
 pub fn layout(tree: &Tree, view_root: usize, w: i32, h: i32, p: &Params) -> Vec<Placed> {
     let (min_w, min_h) = min_size(p.density);
     let b = p.bias.clamp(-20, 20) as i64;
     let mut cx = Ctx { tree, min_w, min_h, wf: 8 + b.max(0), hf: 8 + (-b).max(0), show_free: p.show_free, out: Vec::new() };
-    let depth = tree.nodes[view_root].depth + 1;
-    layout_folder(&mut cx, view_root, IRect { x: 0, y: 0, w, h }, depth);
+    let r = IRect { x: 0, y: 0, w, h };
+    let n = &tree.nodes[view_root];
+    let depth = n.depth;
+    let is_folder = n.is_dir && !n.is_free;
+    if is_folder {
+        let slot = cx.out.len();
+        cx.out.push(Placed {
+            node: Some(view_root),
+            rect: r,
+            depth,
+            is_folder: true,
+            opened: false,
+        });
+        let inner = IRect {
+            x: r.x + INSET_LEFT,
+            y: r.y + INSET_TOP,
+            w: r.w - INSET_LEFT - INSET_RIGHT,
+            h: r.h - INSET_TOP - INSET_BOTTOM,
+        };
+        let before = cx.out.len();
+        layout_folder(&mut cx, view_root, inner, depth + 1);
+        cx.out[slot].opened = cx.out.len() > before;
+    } else {
+        layout_folder(&mut cx, view_root, r, depth + 1);
+    }
     cx.out
 }
 
@@ -202,9 +225,12 @@ mod tests {
     fn two_equal_files_split_the_wider_side() {
         let t = flat(&[100, 100]);
         let out = layout(&t, 0, 400, 200, &p(0, 0));
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].rect, IRect { x: 0, y: 0, w: 200, h: 200 });
-        assert_eq!(out[1].rect, IRect { x: 200, y: 0, w: 200, h: 200 });
+        // view root fills the map; children share the inset area
+        assert_eq!(out[0].node, Some(0));
+        assert_eq!(out[0].rect, IRect { x: 0, y: 0, w: 400, h: 200 });
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1].rect, IRect { x: 3, y: 12, w: 197, h: 185 });
+        assert_eq!(out[2].rect, IRect { x: 200, y: 12, w: 197, h: 185 });
     }
 
     #[test]
@@ -212,30 +238,35 @@ mod tests {
         // A gets 60, then 30 goes to B (60 > 0), then 10 goes to B (60 > 30): 60 | 40
         let t = flat(&[60, 30, 10]);
         let out = layout(&t, 0, 1000, 400, &p(0, 0));
-        assert_eq!(out[0].rect, IRect { x: 0, y: 0, w: 600, h: 400 });
-        // B (30+10) in 400x400 is cut across its height: 300 | 100
-        assert_eq!(out[1].rect, IRect { x: 600, y: 0, w: 400, h: 300 });
-        assert_eq!(out[2].rect, IRect { x: 600, y: 300, w: 400, h: 100 });
+        assert_eq!(out[0].node, Some(0));
+        // inset area is 994×385; A gets 60% of width → 596
+        assert_eq!(out[1].rect, IRect { x: 3, y: 12, w: 596, h: 385 });
+        // B (30+10) in 398×385 is still width-cut (398>385): 298 | 100
+        assert_eq!(out[2].rect, IRect { x: 599, y: 12, w: 298, h: 385 });
+        assert_eq!(out[3].rect, IRect { x: 897, y: 12, w: 100, h: 385 });
     }
 
     #[test]
     fn bias_favours_vertical_or_horizontal_cuts() {
         let t = flat(&[100, 100]);
-        // square area: with no bias the height is cut (w*8/8 > h*8/8 is false)
+        // inset is 294×285: with no bias the wider side is cut (width)
         let out = layout(&t, 0, 300, 300, &p(0, 0));
-        assert_eq!(out[0].rect.w, 300);
-        // positive bias weights the width, so the width is cut
-        let out = layout(&t, 0, 300, 300, &p(0, 5));
-        assert_eq!(out[0].rect.h, 300);
+        assert_eq!(out[1].rect.h, 285);
+        assert_eq!(out[1].rect.w + out[2].rect.w, 294);
+        // negative bias weights height, so height is cut instead
+        let out = layout(&t, 0, 300, 300, &p(0, -5));
+        assert_eq!(out[1].rect.w, 294);
+        assert_eq!(out[1].rect.h + out[2].rect.h, 285);
     }
 
     #[test]
     fn small_regions_become_one_gray_filler() {
         let t = flat(&[1000, 1, 1, 1]);
         let out = layout(&t, 0, 400, 100, &p(0, 0));
-        // the three tiny files share a region narrower than 32 px: one filler
+        // view root + big file + one filler for the three tiny files
         assert!(out.iter().any(|b| b.node.is_none()));
-        assert_eq!(out.iter().filter(|b| b.node.is_some()).count(), 1);
+        assert_eq!(out.iter().filter(|b| b.node.is_some()).count(), 2);
+        assert_eq!(out[0].node, Some(0));
     }
 
     #[test]
@@ -245,7 +276,31 @@ mod tests {
         nodes[1].children = vec![2];
         let t = Tree { nodes, root_path: PathBuf::from("/"), fs_total: 0, fs_free: 0, free_node: None };
         let out = layout(&t, 0, 200, 100, &p(0, 0));
+        assert_eq!(out[0].node, Some(0));
         assert_eq!(out[1].rect, IRect { x: 3, y: 12, w: 194, h: 85 });
-        assert_eq!(out[1].depth, 1);
+        assert_eq!(out[1].depth, 0);
+        // file inside folder d is inset again
+        assert_eq!(out[2].rect, IRect { x: 6, y: 24, w: 188, h: 70 });
+        assert_eq!(out[2].depth, 1);
+    }
+
+    #[test]
+    fn zoomed_folder_is_outer_frame() {
+        let mut nodes = vec![
+            node("/", 100, None, -1, true),
+            node("d", 100, Some(0), 0, true),
+            node("a", 60, Some(1), 1, false),
+            node("b", 40, Some(1), 1, false),
+        ];
+        nodes[0].children = vec![1];
+        nodes[1].children = vec![2, 3];
+        let t = Tree { nodes, root_path: PathBuf::from("/"), fs_total: 0, fs_free: 0, free_node: None };
+        let out = layout(&t, 1, 400, 200, &p(0, 0));
+        assert_eq!(out[0].node, Some(1));
+        assert_eq!(out[0].rect, IRect { x: 0, y: 0, w: 400, h: 200 });
+        assert!(out[0].opened);
+        assert!(out.iter().any(|b| b.node == Some(2)));
+        assert!(out.iter().any(|b| b.node == Some(3)));
+        assert!(!out.iter().any(|b| b.node == Some(0)));
     }
 }

@@ -15,10 +15,16 @@ use std::time::{Duration, Instant};
 
 // Classic Windows 3D colours (button face, highlight, shadow).
 const FACE: Color32 = Color32::from_rgb(192, 192, 192);
+const FACE_LIGHT: Color32 = Color32::from_rgb(245, 245, 248); // fillers on Spectrum / Pastel
 const HILITE: Color32 = Color32::from_rgb(255, 255, 255);
 const SHADOW: Color32 = Color32::from_rgb(128, 128, 128);
 const DKSHADOW: Color32 = Color32::from_rgb(64, 64, 64);
 const BLACK: Color32 = Color32::BLACK;
+/// Type-find hit ring (distinct from black/white selection).
+const FIND_RING: Color32 = Color32::from_rgb(255, 193, 7);
+const FIND_RING_INNER: Color32 = Color32::from_rgb(140, 90, 0);
+/// Minimum time a type-find hit stays highlighted; keystrokes during this window are dropped.
+const FIND_MIN_HIGHLIGHT: Duration = Duration::from_millis(90);
 
 // Rainbow tiers, tables 0x42c0c0 / 0x42c0e0 / 0x42c100.
 const RAINBOW_FILL: [(u8, u8, u8); 8] = [
@@ -51,7 +57,69 @@ const RAINBOW_DARK: [(u8, u8, u8); 8] = [
     (159, 159, 159),
     (191, 127, 191),
 ];
-// Solid choices 2..=11 (tables 0x42c128 / 0x42c150 / 0x42c178).
+// Spectrum — tuned via color-editor (0.3).
+const SPECTRUM_FILL: [(u8, u8, u8); 8] = [
+    (255, 102, 102),
+    (255, 219, 102),
+    (255, 255, 102),
+    (102, 255, 102),
+    (102, 186, 255),
+    (102, 102, 255),
+    (179, 179, 179),
+    (207, 102, 255),
+];
+const SPECTRUM_LIGHT: [(u8, u8, u8); 8] = [
+    (255, 204, 204),
+    (255, 231, 153),
+    (255, 255, 153),
+    (153, 255, 153),
+    (153, 209, 255),
+    (223, 223, 255),
+    (204, 204, 204),
+    (223, 153, 255),
+];
+const SPECTRUM_DARK: [(u8, u8, u8); 8] = [
+    (242, 217, 217),
+    (255, 243, 204),
+    (255, 255, 204),
+    (204, 255, 204),
+    (204, 232, 255),
+    (159, 159, 255),
+    (230, 230, 230),
+    (238, 204, 255),
+];
+// Pastel — Rainbow's depth ladder as soft but saturated Material-ish pastels (0.3).
+const PASTEL_FILL: [(u8, u8, u8); 8] = [
+    (255, 198, 192), // rose
+    (255, 208, 160), // peach
+    (255, 232, 128), // soft yellow
+    (160, 222, 180), // mint green
+    (130, 220, 232), // aqua
+    (150, 198, 250), // sky blue
+    (214, 204, 230), // lilac-gray
+    (214, 190, 255), // lavender
+];
+const PASTEL_LIGHT: [(u8, u8, u8); 8] = [
+    (255, 226, 222),
+    (255, 232, 200),
+    (255, 244, 180),
+    (200, 240, 214),
+    (180, 240, 246),
+    (190, 222, 255),
+    (236, 230, 244),
+    (236, 220, 255),
+];
+const PASTEL_DARK: [(u8, u8, u8); 8] = [
+    (220, 155, 148),
+    (220, 168, 120),
+    (215, 185, 90),
+    (115, 175, 140),
+    (90, 170, 185),
+    (110, 155, 210),
+    (165, 155, 185),
+    (165, 140, 210),
+];
+// Solid choices 4..=13 (classic tables 0x42c128 / 0x42c150 / 0x42c178).
 const SOLID_FILL: [(u8, u8, u8); 10] = [
     (255, 255, 255),
     (191, 191, 191),
@@ -100,12 +168,32 @@ fn scheme(choice: i32, depth: i32) -> (Color32, Color32, Color32) {
             let i = depth.rem_euclid(8) as usize;
             (rgb(RAINBOW_FILL[i]), rgb(RAINBOW_LIGHT[i]), rgb(RAINBOW_DARK[i]))
         }
-        1 => (FACE, HILITE, SHADOW),
+        1 => {
+            let i = depth.rem_euclid(8) as usize;
+            (rgb(SPECTRUM_FILL[i]), rgb(SPECTRUM_LIGHT[i]), rgb(SPECTRUM_DARK[i]))
+        }
+        2 => {
+            let i = depth.rem_euclid(8) as usize;
+            (rgb(PASTEL_FILL[i]), rgb(PASTEL_LIGHT[i]), rgb(PASTEL_DARK[i]))
+        }
+        3 => (FACE, HILITE, SHADOW),
         c => {
-            let i = (c.clamp(2, 11) - 2) as usize;
+            let i = (c.clamp(4, 13) - 4) as usize;
             (rgb(SOLID_FILL[i]), rgb(SOLID_LIGHT[i]), rgb(SOLID_DARK[i]))
         }
     }
+}
+
+fn palette_strip(ui: &mut egui::Ui, label: &str, fills: &[(u8, u8, u8); 8]) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).small());
+        ui.add_space(6.0);
+        for c in fills {
+            let (r, _) = ui.allocate_exact_size(Vec2::new(22.0, 14.0), Sense::hover());
+            ui.painter().rect_filled(r, 2.0, rgb(*c));
+            ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, Color32::from_rgb(140, 140, 150)), StrokeKind::Outside);
+        }
+    });
 }
 
 const LABEL_SIZE: f32 = 9.0;
@@ -167,6 +255,12 @@ pub struct SpaceApp {
     tree: Option<Tree>,
     view_root: usize,
     selected: Option<usize>,
+    /// Type-find highlight among children of `selected` (amber ring).
+    find_hit: Option<usize>,
+    /// Last character used for type-find (for cycling on repeat).
+    find_char: Option<char>,
+    /// When the current find hit was shown (for minimum highlight dwell).
+    find_at: Option<Instant>,
     show_free: bool,
     placed: Vec<Placed>,
     layout_key: Option<LayoutKey>,
@@ -227,7 +321,10 @@ impl SpaceApp {
             tree: None,
             view_root: 0,
             selected: None,
-            show_free: true,
+            find_hit: None,
+            find_char: None,
+            find_at: None,
+            show_free: screenshot.is_none(), // hide free-space slab in check shots so colour schemes show
             placed: Vec::new(),
             layout_key: None,
             tree_gen: 0,
@@ -280,6 +377,104 @@ impl SpaceApp {
     fn set_message(&mut self, msg: impl Into<String>) {
         self.message_seq = self.next_dlg_seq();
         self.message = Some(msg.into());
+    }
+
+    fn clear_find(&mut self) {
+        self.find_hit = None;
+        self.find_char = None;
+        self.find_at = None;
+    }
+
+    fn set_selected(&mut self, sel: Option<usize>) {
+        if self.selected != sel {
+            self.clear_find();
+        }
+        self.selected = sel;
+    }
+
+    /// Type-find: cycle visible children of the selected folder by name prefix.
+    fn type_find(&mut self, ch: char) {
+        if ch.is_control() || ch.is_whitespace() {
+            return;
+        }
+        if self.find_hit.is_some() {
+            if let Some(at) = self.find_at {
+                if at.elapsed() < FIND_MIN_HIGHLIGHT {
+                    return;
+                }
+            }
+        }
+        let Some(sel) = self.selected else { return };
+        let Some(tree) = &self.tree else { return };
+        if sel >= tree.nodes.len() {
+            return;
+        }
+        let n = &tree.nodes[sel];
+        if !n.is_dir || n.is_free {
+            return;
+        }
+        let mut matches: Vec<usize> = n
+            .children
+            .iter()
+            .copied()
+            .filter(|&c| {
+                let child = &tree.nodes[c];
+                if child.is_free || child.name.is_empty() {
+                    return false;
+                }
+                child
+                    .name
+                    .chars()
+                    .next()
+                    .is_some_and(|c0| c0.eq_ignore_ascii_case(&ch))
+            })
+            .collect();
+        if matches.is_empty() {
+            self.find_char = Some(ch);
+            self.find_hit = None;
+            self.find_at = None;
+            return;
+        }
+        matches.sort_by(|&a, &b| {
+            tree.nodes[a]
+                .name
+                .to_ascii_lowercase()
+                .cmp(&tree.nodes[b].name.to_ascii_lowercase())
+        });
+        let placed: std::collections::HashSet<usize> =
+            self.placed.iter().filter_map(|p| p.node).collect();
+        let visible: Vec<usize> = matches
+            .iter()
+            .copied()
+            .filter(|m| placed.contains(m))
+            .collect();
+        // Fall back to all matches only if none are drawn (still advances state).
+        let cycle = if visible.is_empty() { &matches } else { &visible };
+        let same = self
+            .find_char
+            .is_some_and(|prev| prev.eq_ignore_ascii_case(&ch));
+        let next = if same {
+            if let Some(cur) = self.find_hit {
+                if let Some(i) = cycle.iter().position(|&m| m == cur) {
+                    cycle[(i + 1) % cycle.len()]
+                } else {
+                    // Current hit hidden (e.g. density); jump to next visible name after it.
+                    let cur_name = tree.nodes[cur].name.to_ascii_lowercase();
+                    cycle
+                        .iter()
+                        .copied()
+                        .find(|&m| tree.nodes[m].name.to_ascii_lowercase() > cur_name)
+                        .unwrap_or(cycle[0])
+                }
+            } else {
+                cycle[0]
+            }
+        } else {
+            cycle[0]
+        };
+        self.find_char = Some(ch);
+        self.find_hit = Some(next);
+        self.find_at = Some(Instant::now());
     }
 
     fn try_open_pending_drive(&mut self, ctx: &egui::Context) {
@@ -345,7 +540,7 @@ impl SpaceApp {
                 }
                 self.tree = Some(tree);
                 self.view_root = view;
-                self.selected = None;
+                self.set_selected(None);
                 self.hover = None;
                 self.placed.clear();
                 self.anim = None;
@@ -477,7 +672,9 @@ impl SpaceApp {
         }
         self.view_root = new_root;
         if !tree.is_ancestor(new_root, self.selected.unwrap_or(new_root)) {
-            self.selected = None;
+            self.set_selected(None);
+        } else {
+            self.clear_find();
         }
         self.layout_key = None;
         let old_placed = self.placed.clone();
@@ -506,7 +703,7 @@ impl SpaceApp {
                     self.view_root = t.nodes[idx].parent.unwrap_or(0);
                 }
                 t.remove(idx);
-                self.selected = None;
+                self.set_selected(None);
                 self.tree_gen += 1;
                 self.layout_key = None;
             }
@@ -728,7 +925,19 @@ impl SpaceApp {
             }
             let node = pl.node.and_then(|i| tree.nodes.get(i));
             let selected = pl.node.is_some() && pl.node == self.selected;
-            draw_box(&painter, r, pl, node, tree, &self.settings, selected, rollover_pi == Some(pi), true);
+            let find_hit = pl.node.is_some() && pl.node == self.find_hit;
+            draw_box(
+                &painter,
+                r,
+                pl,
+                node,
+                tree,
+                &self.settings,
+                selected,
+                find_hit,
+                rollover_pi == Some(pi),
+                true,
+            );
         }
         if let (Some(a), Some(t)) = (&self.anim, anim_t) {
             // inverted outline (R2_NOT in the original): black and white lines read on any colour
@@ -744,12 +953,19 @@ impl SpaceApp {
             .filter(|&n| n < tree.nodes.len());
         let is_dir = hovered_node.map(|n| tree.nodes[n].is_dir && !tree.nodes[n].is_free);
         let is_free = hovered_node.is_some_and(|n| tree.nodes[n].is_free);
-        if resp.clicked() || resp.secondary_clicked() {
-            self.selected = hovered_node;
+        if resp.clicked() {
+            // Toggle: click the selected item again to clear selection.
+            let next = match hovered_node {
+                Some(n) if self.selected == Some(n) => None,
+                other => other,
+            };
+            self.set_selected(next);
+        } else if resp.secondary_clicked() {
+            self.set_selected(hovered_node);
         }
         if resp.double_clicked() {
             if let Some(n) = hovered_node {
-                self.selected = Some(n);
+                self.set_selected(Some(n));
                 if is_dir == Some(true) {
                     self.run(Cmd::ZoomIn, &ctx);
                 } else if !is_free {
@@ -837,14 +1053,15 @@ impl SpaceApp {
             (light, BLACK)
         };
         let screen = ctx.content_rect();
-        let mut tip_pos = pos + Vec2::new(12.0, 18.0);
         let est_w = lines.iter().map(|l| l.chars().count() as f32 * 6.5).fold(60.0, f32::max) + 10.0;
+        let est_h = lines.len() as f32 * 15.0 + 6.0;
+        // Prefer above the cursor; fall back below if there isn't room.
+        let mut tip_pos = pos + Vec2::new(12.0, -est_h - 4.0);
         if tip_pos.x + est_w > screen.right() {
             tip_pos.x = (screen.right() - est_w).max(screen.left());
         }
-        let est_h = lines.len() as f32 * 15.0 + 6.0;
-        if tip_pos.y + est_h > screen.bottom() {
-            tip_pos.y = pos.y - est_h - 4.0;
+        if tip_pos.y < screen.top() {
+            tip_pos.y = pos.y + 18.0;
         }
         egui::Area::new(egui::Id::unique("box_tip"))
             .order(egui::Order::Tooltip)
@@ -1027,7 +1244,7 @@ impl SpaceApp {
                     egui::Grid::new("color_grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                         for (label, val, id) in [("Folders", &mut s.folder_color, "fc"), ("Files", &mut s.file_color, "flc")] {
                             ui.label(label);
-                            let mut idx = *val as usize;
+                            let mut idx = (*val as usize).min(COLOR_LABELS.len() - 1);
                             egui::ComboBox::from_id_salt(id).width(180.0).selected_text(COLOR_LABELS[idx]).show_ui(ui, |ui| {
                                 for (i, l) in COLOR_LABELS.iter().enumerate() {
                                     ui.selectable_value(&mut idx, i, *l);
@@ -1037,6 +1254,11 @@ impl SpaceApp {
                             ui.end_row();
                         }
                     });
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Depth palettes").small().strong());
+                    palette_strip(ui, "Rainbow", &RAINBOW_FILL);
+                    palette_strip(ui, "Spectrum", &SPECTRUM_FILL);
+                    palette_strip(ui, "Pastel", &PASTEL_FILL);
                 });
                 group(ui, "ToolTips", |ui| {
                     for (on, delay, label) in [
@@ -1117,21 +1339,54 @@ impl SpaceApp {
         if self.about {
             let mut close = false;
             dialog(ctx, "About kSpaceMonger", self.about_seq, |ui| {
-                ui.set_min_width(360.0);
+                ui.set_min_width(460.0);
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
                     draw_icon(ui.painter(), Cmd::About, r, true);
                     ui.vertical(|ui| {
                         ui.label(
-                            egui::RichText::new("kSpaceMonger 0.2.0").font(FontId::new(16.0, FontFamily::Name("bold".into()))),
+                            egui::RichText::new("kSpaceMonger 0.3.0").font(FontId::new(16.0, FontFamily::Name("bold".into()))),
                         );
                         ui.label("A fast disk space map for Linux,");
-                        ui.label("in the style of the classic 1990s space mappers.");
+                        ui.label("based on the classic Windows SpaceMonger 1.x.");
                     });
                 });
                 ui.add_space(6.0);
                 ui.label("Bigger boxes use more space. Click a box to select it,");
                 ui.label("double-click a folder to zoom in, right-click for more.");
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Original developers").font(FontId::new(13.0, FontFamily::Name("bold".into()))),
+                );
+                ui.label("SpaceMonger 1.x was created by Sean Werkema.");
+                ui.label("Copyright © 1998, 1999, and 2000 by Sean Werkema.");
+                ui.label("Freeware for Windows 95, 98, and NT.");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Historical site:");
+                    ui.hyperlink("http://www.werkema.com/software/spacemonger.html");
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Preserved 1.4 source:");
+                    ui.hyperlink("https://github.com/seanofw/spacemonger1");
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("History:");
+                    ui.hyperlink_to(
+                        "SpaceMonger 1.x Post-Mortem",
+                        "https://www.werkema.com/programming/the-spacemonger-1-x-post-mortem/",
+                    );
+                });
+                ui.add_space(4.0);
+                ui.label("Treemap concept (prior art): Dr. Ben Shneiderman (1990).");
+                ui.label("Sean independently rediscovered the idea for SpaceMonger.");
+                ui.add_space(4.0);
+                ui.label("Later commercial line (not the basis of this rebuild):");
+                ui.label("SpaceMonger 2.x — Sixty-Five / Sean Werkema;");
+                ui.label("SpaceMonger 3.x — Edgerunner / Stardock with Sean Werkema.");
+                ui.add_space(4.0);
+                ui.label("kSpaceMonger is an independent Linux reimplementation.");
+                ui.label("Not affiliated with Sean Werkema, Sixty-Five,");
+                ui.label("Edgerunner, or Stardock.");
                 ui.add_space(6.0);
                 ui.vertical_centered(|ui| {
                     if ui.add(egui::Button::new("OK").min_size(Vec2::new(80.0, 22.0))).clicked() {
@@ -1256,6 +1511,35 @@ impl SpaceApp {
         if self.any_dialog() || ctx.egui_wants_keyboard_input() {
             return;
         }
+        // Type-find: with a folder selected, typed characters cycle matching children.
+        let folder_selected = self.selected.is_some_and(|s| {
+            self.tree.as_ref().is_some_and(|t| {
+                s < t.nodes.len() && t.nodes[s].is_dir && !t.nodes[s].is_free
+            })
+        });
+        let mut typed = false;
+        if folder_selected {
+            let texts: Vec<String> = ctx.input(|i| {
+                if i.modifiers.ctrl || i.modifiers.command || i.modifiers.alt {
+                    return Vec::new();
+                }
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::Text(t) => Some(t.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            for t in texts {
+                for ch in t.chars() {
+                    if !ch.is_control() && !ch.is_whitespace() {
+                        self.type_find(ch);
+                        typed = true;
+                    }
+                }
+            }
+        }
         let keys: [(egui::Key, Cmd); 7] = [
             (egui::Key::Enter, Cmd::ZoomIn),
             (egui::Key::Backspace, Cmd::ZoomOut),
@@ -1266,12 +1550,20 @@ impl SpaceApp {
             (egui::Key::F, Cmd::FreeSpace),
         ];
         for (k, c) in keys {
+            // When type-find is active, letter shortcuts yield to typed characters.
+            if typed && matches!(k, egui::Key::O | egui::Key::F) {
+                continue;
+            }
             if ctx.input(|i| i.key_pressed(k)) {
                 self.run(c, ctx);
             }
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.selected = None;
+            if self.find_hit.is_some() {
+                self.clear_find();
+            } else {
+                self.set_selected(None);
+            }
         }
     }
 
@@ -1403,9 +1695,19 @@ fn shorten(s: &str, max: usize) -> String {
     }
 }
 
+fn filler_gray(s: &Settings) -> Color32 {
+    // Spectrum (1) / Pastel (2): Win95 FACE reads as dark holes; use a light slab instead.
+    if matches!(s.folder_color, 1 | 2) || matches!(s.file_color, 1 | 2) {
+        FACE_LIGHT
+    } else {
+        FACE
+    }
+}
+
 fn colors_for(pl: &Placed, n: &scan::Node, s: &Settings) -> (Color32, Color32, Color32) {
     if n.is_free {
-        return (FACE, FACE, FACE);
+        let g = filler_gray(s);
+        return (g, g, g);
     }
     let choice = if pl.is_folder { s.folder_color } else { s.file_color };
     scheme(choice, pl.depth)
@@ -1420,6 +1722,7 @@ fn draw_box(
     tree: &Tree,
     s: &Settings,
     selected: bool,
+    find_hit: bool,
     rollover: bool,
     labels: bool,
 ) {
@@ -1428,7 +1731,10 @@ fn draw_box(
     }
     let (mut fill, mut light, mut dark) = match node {
         Some(n) => colors_for(pl, n, s),
-        None => (FACE, FACE, FACE),
+        None => {
+            let g = filler_gray(s);
+            (g, g, g)
+        }
     };
     if rollover && node.is_some_and(|n| !n.is_free) {
         dark = fill;
@@ -1440,7 +1746,25 @@ fn draw_box(
     let i1 = r.shrink(1.0);
     p.rect_filled(i1, 0.0, dark);
     p.rect_filled(Rect::from_min_max(i1.min, Pos2::new(i1.max.x - 1.0, i1.max.y - 1.0)), 0.0, light);
-    p.rect_filled(r.shrink(2.0), 0.0, fill);
+    let body = r.shrink(2.0);
+    // Selected folder: paint the whole rectangle so the full frame is obvious.
+    // Opened folders keep their fill (children draw inside); closed folders fill black.
+    let folder_selected = selected && pl.is_folder;
+    if folder_selected && !pl.opened {
+        p.rect_filled(body, 0.0, BLACK);
+    } else {
+        p.rect_filled(body, 0.0, fill);
+    }
+    if folder_selected {
+        // High-contrast ring around the entire folder rect (reads over any palette).
+        p.rect_stroke(r, 0.0, Stroke::new(2.0, Color32::WHITE), StrokeKind::Inside);
+        p.rect_stroke(r.shrink(2.0), 0.0, Stroke::new(2.0, BLACK), StrokeKind::Inside);
+    }
+    if find_hit {
+        // Amber type-find ring — distinct from selection, full rectangle.
+        p.rect_stroke(r, 0.0, Stroke::new(3.0, FIND_RING), StrokeKind::Inside);
+        p.rect_stroke(r.shrink(3.0), 0.0, Stroke::new(1.0, FIND_RING_INNER), StrokeKind::Inside);
+    }
 
     let Some(n) = node else { return };
     if !labels {
@@ -1448,7 +1772,7 @@ fn draw_box(
     }
     let font = FontId::proportional(LABEL_SIZE);
     let (x, y, w, h) = (r.min.x, r.min.y, r.width(), r.height());
-    let inner = r.shrink(2.0);
+    let inner = body;
     let tc = if selected { Color32::WHITE } else { BLACK };
 
     if pl.is_folder && pl.opened {
@@ -1461,7 +1785,8 @@ fn draw_box(
         let g = if full.size().x > header.width() - 2.0 { p.layout_no_wrap(n.name.clone(), font, tc) } else { full };
         let clip = p.with_clip_rect(header.expand2(Vec2::new(0.0, 1.0)).intersect(inner));
         if selected {
-            clip.rect_filled(Rect::from_min_size(header.min, Vec2::new((g.size().x + 3.0).min(header.width()), header.height())), 0.0, BLACK);
+            // Full header bar (not just the text width) so the top of the frame reads as selected.
+            clip.rect_filled(header, 0.0, BLACK);
         }
         let ty = y + 1.0 + (layout::INSET_TOP as f32 - 1.0 - g.size().y) / 2.0;
         clip.galley(Pos2::new(x + 3.0, ty), g, tc);
@@ -1498,7 +1823,8 @@ fn draw_box(
     let ty = if total_h <= inner.height() { y + (h - total_h) / 2.0 } else { y + 1.0 };
     let tx = if g.size().x <= w - 4.0 { x + (w - g.size().x) / 2.0 } else { x + 2.0 };
     let clip = p.with_clip_rect(inner);
-    if selected {
+    // Closed folders already filled black above; files still get a text-sized selection bar.
+    if selected && !pl.is_folder {
         let bw = g.size().x.max(gs.as_ref().map(|g| g.size().x).unwrap_or(0.0)) + 6.0;
         let bx = x + ((w - bw) / 2.0).max(2.0);
         clip.rect_filled(Rect::from_min_size(Pos2::new(bx, ty), Vec2::new(bw, total_h)), 0.0, BLACK);
