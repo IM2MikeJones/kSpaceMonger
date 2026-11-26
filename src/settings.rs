@@ -30,8 +30,10 @@ pub const TIP_ATTRS: u32 = 16;
 
 pub const DENSITY_LABELS: [&str; 6] =
     ["Too Few Files", "Very Few Files", "Normal", "Lots of Files", "Very Many Files", "Too Many Files"];
-pub const COLOR_LABELS: [&str; 12] = [
+pub const COLOR_LABELS: [&str; 14] = [
     "Rainbow",
+    "Spectrum", // 0.3 — muted modern cousin of Rainbow
+    "Pastel",   // 0.3 — Material 3–style pastel containers
     "Windows Colors",
     "White",
     "Light Gray",
@@ -44,6 +46,7 @@ pub const COLOR_LABELS: [&str; 12] = [
     "Blue",
     "Violet",
 ];
+pub const COLOR_MAX: i32 = 13;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -79,16 +82,18 @@ impl Settings {
         let mut s = Settings::default();
         let Some(p) = path() else { return s };
         let Ok(text) = std::fs::read_to_string(p) else { return s };
+        let mut conf_ver = 1i64;
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let (k, v) = (k.trim(), v.trim());
             let i = v.parse::<i64>().ok();
             let b = v == "1" || v == "true";
             match k {
+                "version" => conf_ver = i.unwrap_or(1),
                 "density" => s.density = i.unwrap_or(0).clamp(-3, 2) as i32,
                 "bias" => s.bias = i.unwrap_or(0).clamp(-20, 20) as i32,
-                "folder_color" => s.folder_color = i.unwrap_or(0).clamp(0, 11) as i32,
-                "file_color" => s.file_color = i.unwrap_or(0).clamp(0, 11) as i32,
+                "folder_color" => s.folder_color = i.unwrap_or(0).clamp(0, COLOR_MAX as i64) as i32,
+                "file_color" => s.file_color = i.unwrap_or(0).clamp(0, COLOR_MAX as i64) as i32,
                 "show_name_tips" => s.show_name_tips = b,
                 "nametip_delay" => s.nametip_delay = i.unwrap_or(125).clamp(0, 5000) as u32,
                 "show_info_tips" => s.show_info_tips = b,
@@ -108,6 +113,29 @@ impl Settings {
                 _ => {}
             }
         }
+        // v1→v2: Spectrum inserted at index 1; shift Windows/solids up by one.
+        if conf_ver < 2 {
+            if s.folder_color >= 1 {
+                s.folder_color = (s.folder_color + 1).min(COLOR_MAX);
+            }
+            if s.file_color >= 1 {
+                s.file_color = (s.file_color + 1).min(COLOR_MAX);
+            }
+        }
+        // v2→v3: Pastel inserted at index 2. Old Spectrum (1) was the M3 pastels → Pastel (2).
+        if conf_ver < 3 {
+            let bump = |c: i32| -> i32 {
+                if c == 1 {
+                    2
+                } else if c >= 2 {
+                    (c + 1).min(COLOR_MAX)
+                } else {
+                    c
+                }
+            };
+            s.folder_color = bump(s.folder_color);
+            s.file_color = bump(s.file_color);
+        }
         s
     }
 
@@ -118,7 +146,7 @@ impl Settings {
         }
         let b = |x: bool| if x { 1 } else { 0 };
         let mut t = format!(
-            "density={}\nbias={}\nfolder_color={}\nfile_color={}\nshow_name_tips={}\nnametip_delay={}\nshow_info_tips={}\ninfotip_delay={}\ninfotip_flags={}\nshow_rollover_box={}\nsave_pos={}\nanimated_zoom={}\ndisable_delete={}\nauto_rescan={}\n",
+            "version=3\ndensity={}\nbias={}\nfolder_color={}\nfile_color={}\nshow_name_tips={}\nnametip_delay={}\nshow_info_tips={}\ninfotip_delay={}\ninfotip_flags={}\nshow_rollover_box={}\nsave_pos={}\nanimated_zoom={}\ndisable_delete={}\nauto_rescan={}\n",
             self.density,
             self.bias,
             self.folder_color,

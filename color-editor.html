@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>kSpaceMonger colour editor</title>
+<style>
+  :root {
+    --bg: #f4f4f7;
+    --card: #fff;
+    --ink: #1c1c22;
+    --muted: #5c5c6a;
+    --line: #d8d8e0;
+    --accent: #3b5bdb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 13px/1.35 system-ui, "Segoe UI", sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+  }
+  header {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    padding: 12px 18px;
+    background: #fff;
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+  header .sp { flex: 1; }
+  button, .file-btn {
+    appearance: none; border: 1px solid var(--line); background: #fff;
+    border-radius: 8px; padding: 7px 12px; cursor: pointer; font: inherit;
+  }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:hover { filter: brightness(0.97); }
+  main { max-width: 1280px; margin: 0 auto; padding: 18px; display: grid; gap: 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+  }
+  .card h2 { margin: 0 0 8px; font-size: 15px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+  .strip { display: flex; gap: 4px; margin-bottom: 12px; }
+  .strip .sw {
+    flex: 1; height: 36px; border-radius: 6px; border: 1px solid #bbb;
+    display: grid; place-items: end start; padding: 2px 5px;
+    font-size: 11px; color: #111; text-shadow: 0 0 2px #fff;
+  }
+  .depth-grid {
+    display: grid;
+    grid-template-columns: 40px repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    align-items: start;
+  }
+  .depth-grid .head {
+    font-size: 11px; color: var(--muted); font-weight: 650; text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .depth-num {
+    font-variant-numeric: tabular-nums; font-weight: 650; padding-top: 28px;
+  }
+  .color-block {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px;
+    background: #fafafa;
+  }
+  .color-top {
+    display: flex; gap: 8px; align-items: center; margin-bottom: 6px;
+  }
+  .swatch {
+    width: 36px; height: 28px; border-radius: 6px; border: 1px solid #aaa; flex: 0 0 auto;
+  }
+  input[type="color"] {
+    width: 34px; height: 28px; padding: 0; border: 1px solid var(--line);
+    border-radius: 6px; background: none; cursor: pointer;
+  }
+  input.hex-text {
+    flex: 1; min-width: 0;
+    font: 11px ui-monospace, monospace;
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px;
+    text-transform: uppercase;
+  }
+  .hsl {
+    display: grid;
+    grid-template-columns: 14px 1fr 36px;
+    gap: 4px 6px;
+    align-items: center;
+  }
+  .hsl label { font-size: 11px; color: var(--muted); font-weight: 650; }
+  .hsl input[type="range"] { width: 100%; accent-color: var(--accent); }
+  .hsl .val {
+    font: 11px ui-monospace, monospace; color: var(--ink); text-align: right;
+  }
+  .hsl-hex {
+    grid-column: 1 / -1;
+    margin-top: 4px;
+    font: 12px ui-monospace, monospace;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+  .row-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  textarea {
+    width: 100%; min-height: 180px; font: 12px/1.35 ui-monospace, monospace;
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+    background: #fafafa;
+  }
+  .singles { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+  .toast {
+    position: fixed; right: 16px; bottom: 16px; background: #1c1c22; color: #fff;
+    padding: 10px 14px; border-radius: 8px; opacity: 0; pointer-events: none;
+    transition: opacity .2s;
+  }
+  .toast.show { opacity: 1; }
+  @media (max-width: 900px) {
+    .depth-grid { grid-template-columns: 28px 1fr; }
+    .depth-grid .head.light, .depth-grid .head.dark { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>kSpaceMonger colour editor</h1>
+  <span class="sp"></span>
+  <button type="button" id="btn-reset">Reset to shipped</button>
+  <button type="button" id="btn-copy-json">Copy JSON</button>
+  <button type="button" id="btn-copy-rust" class="primary">Copy Rust consts</button>
+  <button type="button" id="btn-download">Download JSON</button>
+  <label class="file-btn">Load JSON<input type="file" id="load-json" accept="application/json,.json" hidden /></label>
+</header>
+<main id="app"></main>
+<div class="toast" id="toast"></div>
+<script>
+const SHIPPED = {
+  version: 1,
+  fillers: {
+    FACE: [192, 192, 192],
+    FACE_LIGHT: [245, 245, 248],
+  },
+  themes: {
+    Rainbow: {
+      fill: [[255,127,127],[255,191,127],[255,255,0],[127,255,127],[127,255,255],[191,191,255],[191,191,191],[255,127,255]],
+      light: [[255,191,191],[255,223,191],[255,255,191],[191,255,191],[223,255,255],[223,223,255],[223,223,223],[255,191,255]],
+      dark: [[191,127,127],[191,159,95],[191,191,63],[127,191,127],[127,191,191],[159,159,255],[159,159,159],[191,127,191]],
+    },
+    Spectrum: {
+      fill: [[255,102,102],[255,219,102],[255,255,102],[102,255,102],[102,186,255],[102,102,255],[179,179,179],[207,102,255]],
+      light: [[255,204,204],[255,231,153],[255,255,153],[153,255,153],[153,209,255],[223,223,255],[204,204,204],[223,153,255]],
+      dark: [[242,217,217],[255,243,204],[255,255,204],[204,255,204],[204,232,255],[159,159,255],[230,230,230],[238,204,255]],
+    },
+    Pastel: {
+      fill: [[255,198,192],[255,208,160],[255,232,128],[160,222,180],[130,220,232],[150,198,250],[214,204,230],[214,190,255]],
+      light: [[255,226,222],[255,232,200],[255,244,180],[200,240,214],[180,240,246],[190,222,255],[236,230,244],[236,220,255]],
+      dark: [[220,155,148],[220,168,120],[215,185,90],[115,175,140],[90,170,185],[110,155,210],[165,155,185],[165,140,210]],
+    },
+  },
+  solids: {
+    labels: ["White","Light Gray","Dark Gray","Red","Orange","Yellow","Green","Aqua","Blue","Violet"],
+    fill: [[255,255,255],[191,191,191],[127,127,127],[255,127,127],[255,191,127],[255,255,0],[127,255,127],[127,255,255],[191,191,255],[255,127,255]],
+    light: [[255,255,255],[255,255,255],[191,191,191],[255,159,159],[255,223,191],[255,255,191],[191,255,191],[223,255,255],[223,223,255],[255,191,255]],
+    dark: [[191,191,191],[127,127,127],[63,63,63],[191,127,127],[191,159,159],[191,191,63],[127,191,127],[127,191,191],[159,159,255],[191,127,191]],
+  },
+};
+
+const STORE_KEY = "kspacemonger-color-editor-v1";
+let state = loadState();
+
+function deepClone(x) { return JSON.parse(JSON.stringify(x)); }
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return deepClone(SHIPPED);
+}
+function saveState() {
+  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+}
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.remove("show"), 1600);
+}
+
+function rgbToHex([r,g,b]) {
+  return "#" + [r,g,b].map(n => n.toString(16).padStart(2,"0")).join("").toUpperCase();
+}
+function hexToRgb(hex) {
+  const h = hex.replace("#","");
+  if (h.length !== 6 || /[^0-9a-fA-F]/.test(h)) return null;
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+}
+function parseHexText(text) {
+  const m = text.trim().match(/^#?([0-9a-fA-F]{6})$/);
+  if (!m) return null;
+  return hexToRgb("#" + m[1]);
+}
+
+/** RGB 0–255 → HSL {h:0–360, s:0–100, l:0–100} */
+function rgbToHsl([r, g, b]) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d !== 0) {
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)); break;
+      case g: h = ((b - r) / d + 2); break;
+      default: h = ((r - g) / d + 4); break;
+    }
+    h /= 6;
+  }
+  return {
+    h: Math.round(h * 360),
+    s: Math.round(s * 100),
+    l: Math.round(l * 100),
+  };
+}
+
+function hslToRgb(h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  s = Math.max(0, Math.min(100, s)) / 100;
+  l = Math.max(0, Math.min(100, l)) / 100;
+  if (s === 0) {
+    const v = Math.round(l * 255);
+    return [v, v, v];
+  }
+  const hue2rgb = (p, q, t) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
+  };
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const hk = h / 360;
+  return [
+    Math.round(hue2rgb(p, q, hk + 1/3) * 255),
+    Math.round(hue2rgb(p, q, hk) * 255),
+    Math.round(hue2rgb(p, q, hk - 1/3) * 255),
+  ];
+}
+
+function rustTuple(rgb) {
+  return `(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+}
+function rustArray(name, rows) {
+  const body = rows.map(r => `    ${rustTuple(r)},`).join("\n");
+  return `const ${name}: [(u8, u8, u8); ${rows.length}] = [\n${body}\n];`;
+}
+function exportRust() {
+  const t = state.themes;
+  const lines = [];
+  lines.push(`const FACE: Color32 = Color32::from_rgb(${state.fillers.FACE.join(", ")});`);
+  lines.push(`const FACE_LIGHT: Color32 = Color32::from_rgb(${state.fillers.FACE_LIGHT.join(", ")});`);
+  lines.push("");
+  for (const [theme, prefix] of [["Rainbow","RAINBOW"],["Spectrum","SPECTRUM"],["Pastel","PASTEL"]]) {
+    lines.push(rustArray(`${prefix}_FILL`, t[theme].fill));
+    lines.push(rustArray(`${prefix}_LIGHT`, t[theme].light));
+    lines.push(rustArray(`${prefix}_DARK`, t[theme].dark));
+    lines.push("");
+  }
+  lines.push(rustArray("SOLID_FILL", state.solids.fill));
+  lines.push(rustArray("SOLID_LIGHT", state.solids.light));
+  lines.push(rustArray("SOLID_DARK", state.solids.dark));
+  return lines.join("\n");
+}
+
+function colorBlock(rgb, attrs) {
+  const hsl = rgbToHsl(rgb);
+  const hex = rgbToHex(rgb);
+  const a = Object.entries(attrs).map(([k,v]) => `data-${k}="${v}"`).join(" ");
+  return `<div class="color-block" ${a}>
+    <div class="color-top">
+      <div class="swatch" style="background:${hex}"></div>
+      <input type="color" value="${hex.toLowerCase()}" data-kind="picker" />
+      <input class="hex-text" type="text" value="${hex}" data-kind="hex" spellcheck="false" />
+    </div>
+    <div class="hsl">
+      <label>H</label>
+      <input type="range" min="0" max="360" value="${hsl.h}" data-kind="h" />
+      <span class="val" data-kind="hv">${hsl.h}</span>
+      <label>S</label>
+      <input type="range" min="0" max="100" value="${hsl.s}" data-kind="s" />
+      <span class="val" data-kind="sv">${hsl.s}</span>
+      <label>L</label>
+      <input type="range" min="0" max="100" value="${hsl.l}" data-kind="l" />
+      <span class="val" data-kind="lv">${hsl.l}</span>
+      <div class="hsl-hex" data-kind="hexlabel">${hex}</div>
+    </div>
+  </div>`;
+}
+
+function readTarget(block) {
+  if (block.dataset.filler) {
+    return {
+      get: () => state.fillers[block.dataset.filler],
+      set: (rgb) => { state.fillers[block.dataset.filler] = rgb; },
+    };
+  }
+  if (block.dataset.theme) {
+    const theme = block.dataset.theme;
+    const key = block.dataset.key;
+    const i = Number(block.dataset.i);
+    return {
+      get: () => state.themes[theme][key][i],
+      set: (rgb) => { state.themes[theme][key][i] = rgb; },
+    };
+  }
+  if (block.dataset.solid) {
+    const key = block.dataset.solid;
+    const i = Number(block.dataset.i);
+    return {
+      get: () => state.solids[key][i],
+      set: (rgb) => { state.solids[key][i] = rgb; },
+    };
+  }
+  return null;
+}
+
+function updateBlockDom(block, rgb) {
+  const hsl = rgbToHsl(rgb);
+  const hex = rgbToHex(rgb);
+  block.querySelector(".swatch").style.background = hex;
+  block.querySelector('input[data-kind="picker"]').value = hex.toLowerCase();
+  block.querySelector('input[data-kind="hex"]').value = hex;
+  block.querySelector('[data-kind="hexlabel"]').textContent = hex;
+  block.querySelector('input[data-kind="h"]').value = hsl.h;
+  block.querySelector('input[data-kind="s"]').value = hsl.s;
+  block.querySelector('input[data-kind="l"]').value = hsl.l;
+  block.querySelector('[data-kind="hv"]').textContent = hsl.h;
+  block.querySelector('[data-kind="sv"]').textContent = hsl.s;
+  block.querySelector('[data-kind="lv"]').textContent = hsl.l;
+}
+
+function applyRgb(block, rgb, { refreshStrip = true } = {}) {
+  const t = readTarget(block);
+  if (!t) return;
+  t.set(rgb);
+  saveState();
+  updateBlockDom(block, rgb);
+  if (refreshStrip && block.dataset.theme && block.dataset.key === "fill") {
+    const strip = document.querySelector(`[data-strip="${block.dataset.theme}"]`);
+    if (strip) {
+      const sw = strip.children[Number(block.dataset.i)];
+      if (sw) {
+        sw.style.background = rgbToHex(rgb);
+      }
+    }
+  }
+  const exportEl = document.getElementById("export");
+  if (exportEl) exportEl.value = exportRust();
+}
+
+function render() {
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+
+  const fillers = document.createElement("section");
+  fillers.className = "card";
+  fillers.innerHTML = `<h2>Filler / free-space greys</h2>
+    <p class="hint">FACE = Rainbow / Windows / solids. FACE_LIGHT = Spectrum &amp; Pastel small boxes. Colour is hex; sliders are H/S/L.</p>
+    <div class="singles" id="fillers"></div>`;
+  app.appendChild(fillers);
+  const fwrap = fillers.querySelector("#fillers");
+  for (const key of ["FACE", "FACE_LIGHT"]) {
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `<div style="font-weight:650;margin-bottom:6px">${key}</div>${colorBlock(state.fillers[key], { filler: key })}`;
+    fwrap.appendChild(wrap);
+  }
+
+  for (const name of Object.keys(state.themes)) {
+    const theme = state.themes[name];
+    const card = document.createElement("section");
+    card.className = "card";
+    card.innerHTML = `<h2>${name}</h2>
+      <p class="hint">Depth 0–7. Drag H / S / L under Fill, Light, and Dark; colour shows as hex.</p>
+      <div class="strip" data-strip="${name}"></div>
+      <div class="depth-grid">
+        <div></div>
+        <div class="head">Fill</div>
+        <div class="head light">Light</div>
+        <div class="head dark">Dark</div>
+      </div>
+      <div class="row-actions">
+        <button type="button" data-auto-bevel="${name}">Auto light/dark from fill</button>
+      </div>`;
+    const grid = card.querySelector(".depth-grid");
+    const strip = card.querySelector(`[data-strip="${name}"]`);
+    for (let i = 0; i < 8; i++) {
+      const fill = theme.fill[i];
+      const sw = document.createElement("div");
+      sw.className = "sw";
+      sw.style.background = rgbToHex(fill);
+      sw.textContent = String(i);
+      strip.appendChild(sw);
+
+      const num = document.createElement("div");
+      num.className = "depth-num";
+      num.textContent = i;
+      grid.appendChild(num);
+      for (const key of ["fill", "light", "dark"]) {
+        const holder = document.createElement("div");
+        holder.innerHTML = colorBlock(theme[key][i], { theme: name, key, i });
+        grid.appendChild(holder.firstElementChild);
+      }
+    }
+    app.appendChild(card);
+  }
+
+  const solids = document.createElement("section");
+  solids.className = "card";
+  solids.innerHTML = `<h2>Solid themes</h2>
+    <p class="hint">White … Violet.</p>
+    <div id="solids" style="display:grid;gap:12px"></div>`;
+  app.appendChild(solids);
+  const sroot = solids.querySelector("#solids");
+  state.solids.labels.forEach((label, i) => {
+    const row = document.createElement("div");
+    row.innerHTML = `<div style="font-weight:650;margin-bottom:6px">${label}</div>
+      <div class="depth-grid" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+        ${colorBlock(state.solids.fill[i], { solid: "fill", i })}
+        ${colorBlock(state.solids.light[i], { solid: "light", i })}
+        ${colorBlock(state.solids.dark[i], { solid: "dark", i })}
+      </div>`;
+    // colorBlock returns a string with one root; rebuild properly
+    row.innerHTML = "";
+    const title = document.createElement("div");
+    title.style.fontWeight = "650";
+    title.style.marginBottom = "6px";
+    title.textContent = label;
+    row.appendChild(title);
+    const g = document.createElement("div");
+    g.className = "depth-grid";
+    g.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
+    for (const key of ["fill", "light", "dark"]) {
+      const holder = document.createElement("div");
+      holder.innerHTML = colorBlock(state.solids[key][i], { solid: key, i });
+      g.appendChild(holder.firstElementChild);
+    }
+    row.appendChild(g);
+    sroot.appendChild(row);
+  });
+
+  const out = document.createElement("section");
+  out.className = "card";
+  out.innerHTML = `<h2>Export</h2>
+    <p class="hint">When happy: <strong>Copy Rust consts</strong> or Download JSON, then tell the agent to apply it.</p>
+    <textarea id="export" readonly></textarea>`;
+  app.appendChild(out);
+  document.getElementById("export").value = exportRust();
+}
+
+function mix(a, b, t) {
+  return [
+    Math.round(a[0] + (b[0]-a[0])*t),
+    Math.round(a[1] + (b[1]-a[1])*t),
+    Math.round(a[2] + (b[2]-a[2])*t),
+  ];
+}
+function autoBevel(theme) {
+  const t = state.themes[theme];
+  for (let i = 0; i < 8; i++) {
+    const f = t.fill[i];
+    t.light[i] = mix(f, [255,255,255], 0.35);
+    t.dark[i] = mix(f, [40,40,40], 0.28);
+  }
+  saveState();
+  render();
+  toast(`Auto bevels for ${theme}`);
+}
+
+document.getElementById("app").addEventListener("input", (e) => {
+  const el = e.target;
+  const block = el.closest(".color-block");
+  if (!block) return;
+  const kind = el.dataset.kind;
+  if (!kind) return;
+
+  if (kind === "picker") {
+    const rgb = hexToRgb(el.value);
+    if (!rgb) return;
+    applyRgb(block, rgb);
+    return;
+  }
+  if (kind === "hex") {
+    const rgb = parseHexText(el.value);
+    if (!rgb) return;
+    applyRgb(block, rgb);
+    return;
+  }
+  if (kind === "h" || kind === "s" || kind === "l") {
+    const h = Number(block.querySelector('input[data-kind="h"]').value);
+    const s = Number(block.querySelector('input[data-kind="s"]').value);
+    const l = Number(block.querySelector('input[data-kind="l"]').value);
+    block.querySelector('[data-kind="hv"]').textContent = h;
+    block.querySelector('[data-kind="sv"]').textContent = s;
+    block.querySelector('[data-kind="lv"]').textContent = l;
+    applyRgb(block, hslToRgb(h, s, l));
+  }
+});
+
+document.getElementById("app").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-auto-bevel]");
+  if (btn) autoBevel(btn.dataset.autoBevel);
+});
+
+document.getElementById("btn-reset").onclick = () => {
+  if (!confirm("Reset all colours to the shipped defaults?")) return;
+  state = deepClone(SHIPPED);
+  saveState();
+  render();
+  toast("Reset");
+};
+document.getElementById("btn-copy-json").onclick = async () => {
+  await navigator.clipboard.writeText(JSON.stringify(state, null, 2));
+  toast("JSON copied");
+};
+document.getElementById("btn-copy-rust").onclick = async () => {
+  await navigator.clipboard.writeText(exportRust());
+  toast("Rust consts copied — paste to the agent");
+};
+document.getElementById("btn-download").onclick = () => {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "kspacemonger-colors.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast("Downloaded JSON");
+};
+document.getElementById("load-json").onchange = async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data.themes || !data.fillers) throw new Error("missing themes/fillers");
+    state = data;
+    saveState();
+    render();
+    toast("Loaded " + file.name);
+  } catch (err) {
+    alert("Could not load JSON: " + err.message);
+  }
+  e.target.value = "";
+};
+
+render();
+</script>
+</body>
+</html>

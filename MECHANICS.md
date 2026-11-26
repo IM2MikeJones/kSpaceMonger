@@ -1,5 +1,7 @@
 # Mechanics sheet — classic disk space map (from SpaceMonger.exe 1.4.0.1, registry key "1.3")
 
+Original Windows program: **SpaceMonger 1.x** by **Sean Werkema** (Copyright © 1998, 1999, and 2000). See app `README.md` § Credits.
+
 All addresses are in the original 32-bit Windows program. Values were read from its
 disassembly; anything marked **estimated** was looked for but not found in the code.
 
@@ -37,7 +39,11 @@ A region is "big enough" only when width > min w AND height > min h (strict).
 
 ## Layout (0x4059b0 → 0x405a40)
 
-1. The view root's children fill the whole map area: rect (0, 0, w-1, h-1), depth = the
+**kSpaceMonger 0.3+:** the view-root folder itself fills the map as the outer frame; its
+children are laid out in the inset (x+3, y+12, …). The original filled the map with the
+view root’s *children* only (folder chrome disappeared on zoom).
+
+1. *(Original)* The view root's children fill the whole map area: rect (0, 0, w-1, h-1), depth = the
    zoomed folder's own depth (0x40588f), so colours stay put when zooming.
 2. Items of size 0 are skipped; the "<Free Space>" item is skipped unless Show Free Space is on.
 3. Greedy two-way split: walk the items in order; add an item to group A unless
