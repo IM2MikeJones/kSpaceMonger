@@ -2,7 +2,23 @@
 
 A fast disk/folder space map for Linux, in the classic SpaceMonger style: readable colors, clear labels, and quick drill-down through directory hierarchies.
 
-**Version:** 0.3.0
+**Version:** 1.0.0
+
+## What you can scan
+
+| Target | Support |
+|--------|---------|
+| **Local Linux** disks and folders | Yes — scanned in-process |
+| **sshfs → remote Linux** (x86_64) | Yes — headless `ksm-agent` over SSH (no FUSE walk) |
+| **sshfs → remote Windows** (x86_64) | Yes — headless `ksm-agent.exe` over SSH (no FUSE walk) |
+
+Remote scans need **working SSH** (key/agent auth suitable for BatchMode) and a **writable** home or temp directory on the remote so the agent can install. Mount / host alias names are not used to detect the OS.
+
+## What’s in 1.0.0
+
+- Everything from the 0.3 line (Spectrum/Pastel, zoom frame, type-find, AppImage + `.deb`, …)
+- Remote SSH agent for Linux and Windows remotes; status chips; failure dialog (no silent FUSE fallback)
+- Desktop Categories/Keywords; `.deb` postinst/postrm refresh desktop DB and icon cache
 
 ## What’s in 0.3
 
@@ -43,20 +59,28 @@ Optional: use AppImageLauncher (or your DE’s “Integrate”) so it appears in
 ### Build packages yourself
 
 ```bash
-# needs: rustc/cargo, dpkg-deb, appimagetool (e.g. ~/.local/bin/appimagetool)
+# needs: rustc/cargo, cargo-xwin, dpkg-deb, appimagetool (e.g. ~/.local/bin/appimagetool)
+# Windows agent target: rustup target add x86_64-pc-windows-msvc
 ./packaging/make-release.sh
 # → dist/kSpaceMonger-*-x86_64.AppImage
 # → dist/kspacemonger_*_amd64.deb
+# (includes ksm-agent + ksm-agent.exe)
 ```
 
 ## Build from source
 
 ```bash
-cargo build --release
+cargo build --release --bins
+# optional Windows remote agent (for sshfs to Windows hosts):
+cargo xwin build --release --bin ksm-agent --no-default-features --target x86_64-pc-windows-msvc
+cp target/x86_64-pc-windows-msvc/release/ksm-agent.exe target/release/
 ./target/release/kSpaceMonger [FOLDER]
 ```
 
 Debug: `cargo run -- [FOLDER]`
+
+Optional SSH smoke (probe + deploy only):  
+`cargo run --release --example remote_smoke -- <ssh-host>`
 
 ## Credits
 

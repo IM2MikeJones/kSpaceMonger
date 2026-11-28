@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+# Refresh menus / icon theme so Kickoff and peers see the new entry without
+# a manual kbuildsycoca5 (or equivalent) from the user.
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database -q /usr/share/applications || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
+fi
+exit 0
