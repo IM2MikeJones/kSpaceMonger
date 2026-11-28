@@ -2,7 +2,7 @@
 
 A fast disk/folder space map for Linux, in the classic SpaceMonger style: readable colors, clear labels, and quick drill-down through directory hierarchies.
 
-**Version:** 1.0.0
+**Version:** 1.0.1
 
 ## What you can scan
 
@@ -13,6 +13,10 @@ A fast disk/folder space map for Linux, in the classic SpaceMonger style: readab
 | **sshfs → remote Windows** (x86_64) | Yes — headless `ksm-agent.exe` over SSH (no FUSE walk) |
 
 Remote scans need **working SSH** (key/agent auth suitable for BatchMode) and a **writable** home or temp directory on the remote so the agent can install. Mount / host alias names are not used to detect the OS.
+
+## What’s in 1.0.1
+
+- Desktop entry fix for menu launch: `StartupNotify=false`, single main category `System`, Keywords + GenericName (Kickoff/Plasma no longer looks like a no-op)
 
 ## What’s in 1.0.0
 

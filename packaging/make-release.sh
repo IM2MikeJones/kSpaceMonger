@@ -112,6 +112,11 @@ cp "$WIN_AGENT" "$DEB_ROOT/usr/bin/ksm-agent.exe"
 chmod 755 "$DEB_ROOT/usr/bin/kSpaceMonger" "$DEB_ROOT/usr/bin/ksm-agent" "$DEB_ROOT/usr/lib/kspacemonger/ksm-agent"
 chmod 644 "$DEB_ROOT/usr/bin/ksm-agent.exe" "$DEB_ROOT/usr/lib/kspacemonger/ksm-agent.exe" || true
 cp "$PKG/${DESKTOP_ID}.desktop" "$DEB_ROOT/usr/share/applications/${DESKTOP_ID}.desktop"
+# .deb only: absolute path so Kickoff does not depend on PATH quirks
+sed -i \
+  -e 's|^Exec=kSpaceMonger$|Exec=/usr/bin/kSpaceMonger|' \
+  -e 's|^TryExec=kSpaceMonger$|TryExec=/usr/bin/kSpaceMonger|' \
+  "$DEB_ROOT/usr/share/applications/${DESKTOP_ID}.desktop"
 stage_icons "$DEB_ROOT/usr/share/icons"
 
 # Debian package version: strip -dev for control if present still keep full for filename
