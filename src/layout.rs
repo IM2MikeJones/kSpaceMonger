@@ -1,6 +1,6 @@
 //! The box layout, following MECHANICS.md ("Layout").
 
-use crate::scan::Tree;
+use kspacemonger::scan::Tree;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IRect {
@@ -181,7 +181,7 @@ fn place_group(cx: &mut Ctx, g: &[(usize, u64)], r: IRect, depth: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan::{Node, Tree};
+    use kspacemonger::scan::{Node, Tree};
     use std::path::PathBuf;
 
     fn node(name: &str, size: u64, parent: Option<usize>, depth: i32, is_dir: bool) -> Node {

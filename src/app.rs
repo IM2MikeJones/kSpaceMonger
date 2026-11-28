@@ -1,8 +1,9 @@
 //! The main window: menu bar, space map, status bar and dialogs.
 
 use crate::layout::{self, IRect, Placed};
-use crate::scan::{self, Progress, Tree};
 use crate::settings::{self, Settings, COLOR_LABELS, DENSITY_LABELS};
+use kspacemonger::remote::{self, StatusChips, SshfsTarget};
+use kspacemonger::scan::{self, Progress, Tree};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Pos2, Rect, Sense, Stroke, StrokeKind,
     Vec2,
@@ -219,8 +220,9 @@ enum Cmd {
 struct ScanJob {
     path: PathBuf,
     progress: Arc<Progress>,
-    handle: Option<JoinHandle<Option<Tree>>>,
+    handle: Option<JoinHandle<Result<Tree, String>>>,
     restore_view: Option<PathBuf>,
+    remote: bool,
 }
 
 /// The original's zoom animation (0x406110): an inverted outline rectangle stepped
@@ -246,6 +248,8 @@ struct Mount {
     fstype: String,
     total: u64,
     free: u64,
+    /// Set for fuse.sshfs mounts — scanned via remote agent, not FUSE.
+    sshfs: Option<SshfsTarget>,
 }
 
 type LayoutKey = (i32, i32, usize, i32, i32, bool, u64);
@@ -292,6 +296,11 @@ pub struct SpaceApp {
     scan_seq: u64,
     shot: Option<Shot>,
     last_window: Option<[f32; 4]>,
+    /// Worded remote status chips (hidden when local).
+    remote_status: Arc<std::sync::Mutex<StatusChips>>,
+    /// One-shot fallback dialog text when remote open fails.
+    remote_fallback: Option<String>,
+    remote_fallback_seq: u64,
 }
 
 impl SpaceApp {
@@ -359,6 +368,9 @@ impl SpaceApp {
                 started: Instant::now(),
             }),
             last_window: None,
+            remote_status: Arc::new(std::sync::Mutex::new(StatusChips::local())),
+            remote_fallback: None,
+            remote_fallback_seq: 0,
         };
         // For the automatic check picture: a stable, non-personal folder.
         let folder = folder.or_else(|| app.shot.as_ref().map(|_| PathBuf::from("/usr")));
@@ -502,16 +514,61 @@ impl SpaceApp {
         if let Some(job) = &self.scan {
             job.progress.cancel.store(true, Ordering::Relaxed);
         }
+        let ssh_index: Vec<(PathBuf, SshfsTarget)> = self
+            .mounts
+            .iter()
+            .filter_map(|m| m.sshfs.clone().map(|t| (m.path.clone(), t)))
+            .collect();
+        if let Some((target, remote_path)) = remote::resolve_remote(&path, &ssh_index) {
+            self.start_remote_scan(target, remote_path, path, restore_view);
+            return;
+        }
+        if let Ok(mut s) = self.remote_status.lock() {
+            *s = StatusChips::local();
+        }
         let progress = Arc::new(Progress::default());
         let p2 = progress.clone();
         let path2 = path.clone();
         let handle = std::thread::Builder::new()
             .name("scan".into())
             .stack_size(256 * 1024 * 1024)
-            .spawn(move || scan::scan(path2, p2))
+            .spawn(move || scan::scan(path2, p2).ok_or_else(|| "scan failed".to_string()))
             .ok();
         self.scan_seq = self.next_dlg_seq();
-        self.scan = Some(ScanJob { path, progress, handle, restore_view });
+        self.scan = Some(ScanJob {
+            path,
+            progress,
+            handle,
+            restore_view,
+            remote: false,
+        });
+    }
+
+    fn start_remote_scan(
+        &mut self,
+        target: SshfsTarget,
+        remote_path: String,
+        local_path: PathBuf,
+        restore_view: Option<PathBuf>,
+    ) {
+        let progress = Arc::new(Progress::default());
+        let status = self.remote_status.clone();
+        let p2 = progress.clone();
+        let handle = std::thread::Builder::new()
+            .name("remote-scan".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                remote::scan_remote(&target, &remote_path, p2, status).map_err(|e| e.user_message())
+            })
+            .ok();
+        self.scan_seq = self.next_dlg_seq();
+        self.scan = Some(ScanJob {
+            path: local_path,
+            progress,
+            handle,
+            restore_view,
+            remote: true,
+        });
     }
 
     fn poll_scan(&mut self, ctx: &egui::Context) {
@@ -531,9 +588,9 @@ impl SpaceApp {
             Some(true) => {}
         }
         let mut job = self.scan.take().unwrap();
-        let result = job.handle.take().and_then(|h| h.join().ok()).flatten();
+        let result = job.handle.take().and_then(|h| h.join().ok());
         match result {
-            Some(tree) => {
+            Some(Ok(tree)) => {
                 let mut view = tree.root();
                 if let Some(rp) = &job.restore_view {
                     view = find_path(&tree, rp).unwrap_or(view);
@@ -548,6 +605,16 @@ impl SpaceApp {
                 self.properties = None;
                 self.tree_gen += 1;
                 self.layout_key = None;
+            }
+            Some(Err(msg)) => {
+                if !job.progress.cancel.load(Ordering::Relaxed) {
+                    if job.remote {
+                        self.remote_fallback_seq = self.next_dlg_seq();
+                        self.remote_fallback = Some(msg);
+                    } else {
+                        self.set_message(msg);
+                    }
+                }
             }
             None => {
                 if !job.progress.cancel.load(Ordering::Relaxed) {
@@ -815,6 +882,19 @@ impl SpaceApp {
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
+        let chips = self.remote_status.lock().ok().map(|s| s.clone());
+        if let Some(c) = chips.as_ref().filter(|c| c.visible) {
+            ui.horizontal(|ui| {
+                status_chip(ui, "SSH", &c.ssh);
+                status_chip(ui, "Agent", &c.agent);
+                status_chip(ui, "Scan", &c.scan);
+                status_chip(ui, "Store", &c.store);
+                if !c.tip.is_empty() {
+                    ui.label(egui::RichText::new(&c.tip).small().color(DKSHADOW))
+                        .on_hover_text(&c.tip);
+                }
+            });
+        }
         let (left, right) = match &self.tree {
             None => {
                 let s = if self.scan.is_some() { "Scanning…" } else { "Ready" };
@@ -1149,16 +1229,17 @@ impl SpaceApp {
                                 ui.spacing_mut().item_spacing.y = 0.0;
                                 for (i, m) in self.mounts.iter().enumerate() {
                                     let sel = self.drive_pick == Some(i);
+                                    let tag = if m.sshfs.is_some() { "ssh" } else { m.fstype.as_str() };
                                     let text = if m.total > 0 {
                                         format!(
                                             "{}   [{}]   {} free of {}",
                                             m.label,
-                                            m.fstype,
+                                            tag,
                                             scan::fmt_size(m.free),
                                             scan::fmt_size(m.total)
                                         )
                                     } else {
-                                        m.label.clone()
+                                        format!("{}   [{}]", m.label, tag)
                                     };
                                     let r = ui.add(
                                         egui::Button::selectable(sel, text)
@@ -1196,8 +1277,15 @@ impl SpaceApp {
                 });
             });
             if ok {
+                self.mounts = list_mounts();
                 let p = PathBuf::from(expand_home(self.drive_text.trim()));
-                if p.is_dir() {
+                let ssh_index: Vec<(PathBuf, SshfsTarget)> = self
+                    .mounts
+                    .iter()
+                    .filter_map(|m| m.sshfs.clone().map(|t| (m.path.clone(), t)))
+                    .collect();
+                let is_remote = remote::resolve_remote(&p, &ssh_index).is_some();
+                if is_remote || p.is_dir() {
                     self.drive_dialog = false;
                     self.start_scan(p, None);
                 } else {
@@ -1205,6 +1293,25 @@ impl SpaceApp {
                 }
             } else if cancel || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.drive_dialog = false;
+            }
+        }
+
+        if let Some(msg) = self.remote_fallback.clone() {
+            let mut close = false;
+            dialog(ctx, "Remote scan unavailable", self.remote_fallback_seq, |ui| {
+                ui.set_min_width(420.0);
+                ui.label(&msg);
+                ui.add_space(8.0);
+                ui.label("Local disks still work from Open folder. Remotes need working SSH and a writable place for the agent.");
+                ui.add_space(6.0);
+                ui.vertical_centered(|ui| {
+                    if ui.add(egui::Button::new("OK").min_size(Vec2::new(80.0, 22.0))).clicked() {
+                        close = true;
+                    }
+                });
+            });
+            if close || ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter)) {
+                self.remote_fallback = None;
             }
         }
 
@@ -1339,13 +1446,14 @@ impl SpaceApp {
         if self.about {
             let mut close = false;
             dialog(ctx, "About kSpaceMonger", self.about_seq, |ui| {
-                ui.set_min_width(460.0);
+                ui.set_min_width(480.0);
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
                     draw_icon(ui.painter(), Cmd::About, r, true);
                     ui.vertical(|ui| {
                         ui.label(
-                            egui::RichText::new("kSpaceMonger 0.3.0").font(FontId::new(16.0, FontFamily::Name("bold".into()))),
+                            egui::RichText::new(format!("kSpaceMonger {}", env!("CARGO_PKG_VERSION")))
+                                .font(FontId::new(16.0, FontFamily::Name("bold".into()))),
                         );
                         ui.label("A fast disk space map for Linux,");
                         ui.label("based on the classic Windows SpaceMonger 1.x.");
@@ -1354,6 +1462,15 @@ impl SpaceApp {
                 ui.add_space(6.0);
                 ui.label("Bigger boxes use more space. Click a box to select it,");
                 ui.label("double-click a folder to zoom in, right-click for more.");
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("What you can scan").font(FontId::new(13.0, FontFamily::Name("bold".into()))),
+                );
+                ui.label("• Local Linux disks and folders");
+                ui.label("• sshfs volumes on remote Linux hosts (x86_64)");
+                ui.label("• sshfs volumes on remote Windows hosts (x86_64)");
+                ui.label("Remotes need working SSH (BatchMode) and a writable");
+                ui.label("home or temp directory so the scan agent can install.");
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new("Original developers").font(FontId::new(13.0, FontFamily::Name("bold".into()))),
@@ -1505,6 +1622,7 @@ impl SpaceApp {
             || self.confirm_delete.is_some()
             || self.properties.is_some()
             || self.message.is_some()
+            || self.remote_fallback.is_some()
     }
 
     fn keys(&mut self, ctx: &egui::Context) {
@@ -2157,12 +2275,25 @@ fn expand_home(s: &str) -> String {
     s.to_string()
 }
 
+fn status_chip(ui: &mut egui::Ui, channel: &str, word: &str) {
+    let label = format!("{channel} {word}");
+    ui.label(egui::RichText::new(label).small().strong());
+    ui.add_space(6.0);
+}
+
 fn list_mounts() -> Vec<Mount> {
     let mut v = Vec::new();
     if let Ok(h) = std::env::var("HOME") {
         let p = PathBuf::from(&h);
         let (total, free) = scan::fs_space(&p);
-        v.push(Mount { label: format!("Home folder ({})", h), path: p, fstype: "home".into(), total, free });
+        v.push(Mount {
+            label: format!("Home folder ({})", h),
+            path: p,
+            fstype: "home".into(),
+            total,
+            free,
+            sshfs: None,
+        });
     }
     const REAL: [&str; 16] = [
         "ext2", "ext3", "ext4", "btrfs", "xfs", "vfat", "exfat", "ntfs", "ntfs3", "fuseblk", "f2fs", "zfs", "nfs", "nfs4",
@@ -2172,11 +2303,29 @@ fn list_mounts() -> Vec<Mount> {
     if let Ok(text) = std::fs::read_to_string("/proc/mounts") {
         for line in text.lines() {
             let f: Vec<&str> = line.split_whitespace().collect();
-            if f.len() < 3 || !REAL.contains(&f[2]) {
+            if f.len() < 3 {
                 continue;
             }
             let mp = f[1].replace("\\040", " ");
             if mp.starts_with("/snap") || mp.starts_with("/var/snap") || (mp.starts_with("/boot/") && mp != "/boot/efi") {
+                continue;
+            }
+            if let Some(ssh) = remote::parse_sshfs_line(f[0], &mp, f[2]) {
+                if !seen.insert(mp.clone()) {
+                    continue;
+                }
+                // Avoid slow/hanging statfs on sshfs for the list — sizes optional.
+                v.push(Mount {
+                    label: format!("{}  ({})", mp, ssh.host),
+                    path: PathBuf::from(&mp),
+                    fstype: f[2].to_string(),
+                    total: 0,
+                    free: 0,
+                    sshfs: Some(ssh),
+                });
+                continue;
+            }
+            if !REAL.contains(&f[2]) {
                 continue;
             }
             if !seen.insert(mp.clone()) {
@@ -2184,7 +2333,14 @@ fn list_mounts() -> Vec<Mount> {
             }
             let p = PathBuf::from(&mp);
             let (total, free) = scan::fs_space(&p);
-            v.push(Mount { label: mp, path: p, fstype: f[2].to_string(), total, free });
+            v.push(Mount {
+                label: mp,
+                path: p,
+                fstype: f[2].to_string(),
+                total,
+                free,
+                sshfs: None,
+            });
         }
     }
     v

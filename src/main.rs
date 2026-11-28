@@ -4,7 +4,6 @@
 
 mod app;
 mod layout;
-mod scan;
 mod settings;
 
 use std::path::PathBuf;
@@ -54,7 +53,6 @@ fn app_icon() -> eframe::egui::IconData {
     let mut reader = decoder.read_info().expect("app icon png header");
     let mut buf = vec![0; reader.output_buffer_size().expect("app icon buffer size")];
     let info = reader.next_frame(&mut buf).expect("app icon png frame");
-    // Expand to RGBA if the PNG is RGB.
     let rgba = match info.color_type {
         png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),
         png::ColorType::Rgb => {

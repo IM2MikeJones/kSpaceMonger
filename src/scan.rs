@@ -1,11 +1,16 @@
 //! Walks a folder tree and records sizes. Runs on a background thread.
+//! Unix and Windows (remote agent) share this module behind `cfg`.
 
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 
 #[derive(Clone, Debug)]
 pub struct Node {
@@ -59,8 +64,16 @@ impl Tree {
     /// Remove a node (after deleting it from disk) and fix the sizes above it.
     pub fn remove(&mut self, idx: usize) {
         let size = self.nodes[idx].size;
-        let files = if self.nodes[idx].is_dir { self.nodes[idx].files } else { 1 };
-        let dirs = if self.nodes[idx].is_dir { self.nodes[idx].dirs + 1 } else { 0 };
+        let files = if self.nodes[idx].is_dir {
+            self.nodes[idx].files
+        } else {
+            1
+        };
+        let dirs = if self.nodes[idx].is_dir {
+            self.nodes[idx].dirs + 1
+        } else {
+            0
+        };
         if let Some(p) = self.nodes[idx].parent {
             self.nodes[p].children.retain(|&c| c != idx);
             let mut cur = Some(p);
@@ -100,7 +113,34 @@ pub struct Progress {
     pub current: Mutex<String>,
 }
 
+/// Volume / device id so the walk stays on one filesystem (one drive).
+#[cfg(unix)]
+fn volume_id(_path: &Path, meta: &fs::Metadata) -> u64 {
+    meta.dev()
+}
+
+/// Drive / UNC prefix string (stable; avoids unstable `volume_serial_number`).
+#[cfg(windows)]
+fn volume_id(path: &Path, _meta: &fs::Metadata) -> String {
+    use std::path::Component;
+    match path.components().next() {
+        Some(Component::Prefix(p)) => format!("{:?}", p.as_os_str()),
+        _ => String::new(),
+    }
+}
+
+#[cfg(unix)]
+fn file_mode(meta: &fs::Metadata) -> u32 {
+    meta.mode()
+}
+
+#[cfg(windows)]
+fn file_mode(meta: &fs::Metadata) -> u32 {
+    meta.file_attributes()
+}
+
 /// (total, free) bytes of the file system holding `path`.
+#[cfg(unix)]
 pub fn fs_space(path: &Path) -> (u64, u64) {
     use std::ffi::CString;
     let Ok(c) = CString::new(path.as_os_str().as_encoded_bytes()) else {
@@ -117,13 +157,48 @@ pub fn fs_space(path: &Path) -> (u64, u64) {
     }
 }
 
+#[cfg(windows)]
+pub fn fs_space(path: &Path) -> (u64, u64) {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            lp_directory_name: *const u16,
+            lp_free_bytes_available_to_caller: *mut u64,
+            lp_total_number_of_bytes: *mut u64,
+            lp_total_number_of_free_bytes: *mut u64,
+        ) -> i32;
+    }
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut free_avail: u64 = 0;
+    let mut total: u64 = 0;
+    let mut free_total: u64 = 0;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_avail,
+            &mut total,
+            &mut free_total,
+        )
+    };
+    if ok != 0 {
+        (total, free_avail)
+    } else {
+        (0, 0)
+    }
+}
+
 pub fn scan(root: PathBuf, prog: Arc<Progress>) -> Option<Tree> {
     let root = fs::canonicalize(&root).unwrap_or(root);
     let meta = fs::metadata(&root).ok()?;
     if !meta.is_dir() {
         return None;
     }
-    let dev = meta.dev();
+    let dev = volume_id(&root, &meta);
     let mut nodes = vec![Node {
         name: root.to_string_lossy().to_string(),
         size: 0,
@@ -133,11 +208,11 @@ pub fn scan(root: PathBuf, prog: Arc<Progress>) -> Option<Tree> {
         children: Vec::new(),
         depth: -1,
         mtime: meta.modified().ok(),
-        mode: meta.mode(),
+        mode: file_mode(&meta),
         files: 0,
         dirs: 0,
     }];
-    walk(&root, 0, dev, &mut nodes, &prog);
+    walk(&root, 0, &dev, &mut nodes, &prog);
     if prog.cancel.load(Ordering::Relaxed) {
         return None;
     }
@@ -157,10 +232,21 @@ pub fn scan(root: PathBuf, prog: Arc<Progress>) -> Option<Tree> {
         files: 0,
         dirs: 0,
     });
-    Some(Tree { nodes, root_path: root, fs_total, fs_free, free_node: Some(free_idx) })
+    Some(Tree {
+        nodes,
+        root_path: root,
+        fs_total,
+        fs_free,
+        free_node: Some(free_idx),
+    })
 }
 
-fn walk(path: &Path, idx: usize, dev: u64, nodes: &mut Vec<Node>, prog: &Progress) {
+#[cfg(unix)]
+type VolId = u64;
+#[cfg(windows)]
+type VolId = String;
+
+fn walk(path: &Path, idx: usize, dev: &VolId, nodes: &mut Vec<Node>, prog: &Progress) {
     if prog.cancel.load(Ordering::Relaxed) {
         return;
     }
@@ -169,10 +255,14 @@ fn walk(path: &Path, idx: usize, dev: u64, nodes: &mut Vec<Node>, prog: &Progres
         *cur = path.to_string_lossy().to_string();
     }
     let depth = nodes[idx].depth + 1;
-    let Ok(rd) = fs::read_dir(path) else { return };
+    let Ok(rd) = fs::read_dir(path) else {
+        return;
+    };
     let mut kids = Vec::new();
     for entry in rd.flatten() {
-        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
         let ft = meta.file_type();
         let is_dir = ft.is_dir();
         let size = if ft.is_file() { meta.len() } else { 0 };
@@ -186,15 +276,16 @@ fn walk(path: &Path, idx: usize, dev: u64, nodes: &mut Vec<Node>, prog: &Progres
             children: Vec::new(),
             depth,
             mtime: meta.modified().ok(),
-            mode: meta.mode(),
+            mode: file_mode(&meta),
             files: 0,
             dirs: 0,
         });
         kids.push(ci);
         if is_dir {
             // stay on one file system, like one drive in the original
-            if meta.dev() == dev {
-                walk(&entry.path(), ci, dev, nodes, prog);
+            let child = entry.path();
+            if &volume_id(&child, &meta) == dev {
+                walk(&child, ci, dev, nodes, prog);
             }
         } else {
             prog.files.fetch_add(1, Ordering::Relaxed);
@@ -211,7 +302,12 @@ fn walk(path: &Path, idx: usize, dev: u64, nodes: &mut Vec<Node>, prog: &Progres
             files += 1;
         }
     }
-    kids.sort_by(|a, b| nodes[*b].size.cmp(&nodes[*a].size).then_with(|| nodes[*a].name.cmp(&nodes[*b].name)));
+    kids.sort_by(|a, b| {
+        nodes[*b]
+            .size
+            .cmp(&nodes[*a].size)
+            .then_with(|| nodes[*a].name.cmp(&nodes[*b].name))
+    });
     let n = &mut nodes[idx];
     n.size = total;
     n.files = files;
@@ -257,16 +353,23 @@ pub fn fmt_count(n: u64) -> String {
 }
 
 /// "%02d %s %04d   %d:%02d:%02d" as in the original.
+#[cfg(unix)]
 pub fn fmt_time(t: Option<SystemTime>) -> String {
-    let Some(t) = t else { return String::new() };
-    let Ok(d) = t.duration_since(SystemTime::UNIX_EPOCH) else { return String::new() };
+    let Some(t) = t else {
+        return String::new();
+    };
+    let Ok(d) = t.duration_since(SystemTime::UNIX_EPOCH) else {
+        return String::new();
+    };
     let secs = d.as_secs() as libc::time_t;
     unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
         if libc::localtime_r(&secs, &mut tm).is_null() {
             return String::new();
         }
-        const MON: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        const MON: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
         format!(
             "{:02} {} {:04}   {}:{:02}:{:02}",
             tm.tm_mday,
@@ -279,6 +382,52 @@ pub fn fmt_time(t: Option<SystemTime>) -> String {
     }
 }
 
+#[cfg(windows)]
+pub fn fmt_time(t: Option<SystemTime>) -> String {
+    let Some(t) = t else {
+        return String::new();
+    };
+    let Ok(d) = t.duration_since(SystemTime::UNIX_EPOCH) else {
+        return String::new();
+    };
+    // Agent / Windows build does not drive the GUI clock string; keep a stable UTC form.
+    let secs = d.as_secs();
+    let days = secs / 86400;
+    let tod = secs % 86400;
+    let h = tod / 3600;
+    let m = (tod % 3600) / 60;
+    let s = tod % 60;
+    let (y, mon, day) = civil_from_days(days as i64);
+    const MON: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    format!(
+        "{:02} {} {:04}   {}:{:02}:{:02}",
+        day,
+        MON[(mon - 1).clamp(0, 11) as usize],
+        y,
+        h,
+        m,
+        s
+    )
+}
+
+#[cfg(windows)]
+fn civil_from_days(days: i64) -> (i32, i32, i32) {
+    // Howard Hinnant algorithm (UTC).
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = (yoe as i64 + era * 400) as i32;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as i32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as i32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
 pub fn fmt_attrs(n: &Node) -> String {
     let mut a = Vec::new();
     if n.is_dir {
@@ -287,11 +436,24 @@ pub fn fmt_attrs(n: &Node) -> String {
     if n.name.starts_with('.') {
         a.push("Hidden");
     }
-    if n.mode & 0o222 == 0 {
-        a.push("Read-Only");
+    #[cfg(unix)]
+    {
+        if n.mode & 0o222 == 0 {
+            a.push("Read-Only");
+        }
+        if !n.is_dir && n.mode & 0o111 != 0 {
+            a.push("Executable");
+        }
     }
-    if !n.is_dir && n.mode & 0o111 != 0 {
-        a.push("Executable");
+    #[cfg(windows)]
+    {
+        // FILE_ATTRIBUTE_READONLY = 0x1, HIDDEN = 0x2
+        if n.mode & 0x1 != 0 {
+            a.push("Read-Only");
+        }
+        if n.mode & 0x2 != 0 {
+            a.push("Hidden");
+        }
     }
     a.join(" ")
 }

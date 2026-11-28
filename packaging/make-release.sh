@@ -14,11 +14,31 @@ if [[ "$VERSION" == *-dev ]]; then
   echo "warning: version is $VERSION (dev). Prefer a release version like 0.3.0 before tagging." >&2
 fi
 
-echo "==> cargo build --release"
-cargo build --release
+echo "==> cargo build --release (GUI + Linux ksm-agent)"
+cargo build --release --bins
 
 BIN="$ROOT/target/release/kSpaceMonger"
+AGENT="$ROOT/target/release/ksm-agent"
 test -x "$BIN"
+test -x "$AGENT"
+
+WIN_TARGET="${KSM_WIN_TARGET:-x86_64-pc-windows-msvc}"
+WIN_AGENT_DIR="$ROOT/target/${WIN_TARGET}/release"
+WIN_AGENT="$WIN_AGENT_DIR/ksm-agent.exe"
+echo "==> cross-build Windows ksm-agent.exe ($WIN_TARGET)"
+if command -v cargo-xwin >/dev/null 2>&1 || cargo xwin --help >/dev/null 2>&1; then
+  rustup target add "$WIN_TARGET" >/dev/null 2>&1 || true
+  cargo xwin build --release --bin ksm-agent --no-default-features --target "$WIN_TARGET"
+elif [[ -n "${KSM_WIN_AGENT:-}" && -f "${KSM_WIN_AGENT}" ]]; then
+  mkdir -p "$WIN_AGENT_DIR"
+  cp "${KSM_WIN_AGENT}" "$WIN_AGENT"
+else
+  echo "error: need cargo-xwin (or set KSM_WIN_AGENT=path/to/ksm-agent.exe)" >&2
+  exit 1
+fi
+test -f "$WIN_AGENT"
+# Dev / local discovery: same folder as the Linux GUI binary
+cp "$WIN_AGENT" "$ROOT/target/release/ksm-agent.exe"
 
 rm -rf "$DIST"
 mkdir -p "$DIST"
@@ -37,9 +57,15 @@ stage_icons() {
 echo "==> AppImage"
 APPDIR="$DIST/AppDir"
 rm -rf "$APPDIR"
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib/kspacemonger" "$APPDIR/usr/share/applications"
 cp "$BIN" "$APPDIR/usr/bin/kSpaceMonger"
-chmod 755 "$APPDIR/usr/bin/kSpaceMonger"
+cp "$AGENT" "$APPDIR/usr/lib/kspacemonger/ksm-agent"
+cp "$WIN_AGENT" "$APPDIR/usr/lib/kspacemonger/ksm-agent.exe"
+# Also next to the GUI binary so current_exe().parent()/ksm-agent resolves in AppImage
+cp "$AGENT" "$APPDIR/usr/bin/ksm-agent"
+cp "$WIN_AGENT" "$APPDIR/usr/bin/ksm-agent.exe"
+chmod 755 "$APPDIR/usr/bin/kSpaceMonger" "$APPDIR/usr/bin/ksm-agent" "$APPDIR/usr/lib/kspacemonger/ksm-agent"
+chmod 644 "$APPDIR/usr/bin/ksm-agent.exe" "$APPDIR/usr/lib/kspacemonger/ksm-agent.exe" || true
 cp "$PKG/${DESKTOP_ID}.desktop" "$APPDIR/usr/share/applications/${DESKTOP_ID}.desktop"
 stage_icons "$APPDIR/usr/share/icons"
 
@@ -73,11 +99,18 @@ DEB_ROOT="$DIST/deb"
 rm -rf "$DEB_ROOT"
 mkdir -p "$DEB_ROOT/DEBIAN" \
   "$DEB_ROOT/usr/bin" \
+  "$DEB_ROOT/usr/lib/kspacemonger" \
   "$DEB_ROOT/usr/share/applications" \
   "$DEB_ROOT/usr/share/doc/kspacemonger"
 
 cp "$BIN" "$DEB_ROOT/usr/bin/kSpaceMonger"
-chmod 755 "$DEB_ROOT/usr/bin/kSpaceMonger"
+cp "$AGENT" "$DEB_ROOT/usr/lib/kspacemonger/ksm-agent"
+cp "$WIN_AGENT" "$DEB_ROOT/usr/lib/kspacemonger/ksm-agent.exe"
+# Symlink-style copy next to GUI for deploy discovery
+cp "$AGENT" "$DEB_ROOT/usr/bin/ksm-agent"
+cp "$WIN_AGENT" "$DEB_ROOT/usr/bin/ksm-agent.exe"
+chmod 755 "$DEB_ROOT/usr/bin/kSpaceMonger" "$DEB_ROOT/usr/bin/ksm-agent" "$DEB_ROOT/usr/lib/kspacemonger/ksm-agent"
+chmod 644 "$DEB_ROOT/usr/bin/ksm-agent.exe" "$DEB_ROOT/usr/lib/kspacemonger/ksm-agent.exe" || true
 cp "$PKG/${DESKTOP_ID}.desktop" "$DEB_ROOT/usr/share/applications/${DESKTOP_ID}.desktop"
 stage_icons "$DEB_ROOT/usr/share/icons"
 
@@ -116,6 +149,10 @@ Comment:
 EOF
 
 gzip -9n -c "$ROOT/README.md" > "$DEB_ROOT/usr/share/doc/kspacemonger/README.gz" || true
+
+# Refresh desktop DB / icon cache on install and remove (Kickoff, GNOME, etc.)
+install -m 0755 "$PKG/postinst" "$DEB_ROOT/DEBIAN/postinst"
+install -m 0755 "$PKG/postrm" "$DEB_ROOT/DEBIAN/postrm"
 
 # Installed size in KiB
 INSTALLED_SIZE="$(du -sk "$DEB_ROOT" | awk '{print $1}')"
