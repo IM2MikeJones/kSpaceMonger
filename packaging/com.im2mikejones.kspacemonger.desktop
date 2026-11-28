@@ -1,11 +1,13 @@
 [Desktop Entry]
 Type=Application
 Name=kSpaceMonger
+GenericName=Disk Space Map
 Comment=Disk and folder space map
-Exec=kSpaceMonger %F
+Exec=kSpaceMonger
+TryExec=kSpaceMonger
 Icon=kspacemonger
 Terminal=false
-Categories=Qt;Utility;System;Filesystem;
+Categories=Qt;System;Filesystem;
 Keywords=disk;space;folder;treemap;usage;
-StartupNotify=true
+StartupNotify=false
 StartupWMClass=kspacemonger
